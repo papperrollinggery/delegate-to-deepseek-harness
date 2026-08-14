@@ -278,4 +278,4 @@ The final command must exit non-zero. Live `probe`, `list`, and delegate tests r
 
 ## License
 
-This repository does not currently include a license. Until the maintainer selects one, public visibility does not grant permission to copy, modify, or redistribute the code. The official DeepSeek Harness has its own MIT license; that license does not automatically apply to this repository.
+This project is licensed under the [MIT License](LICENSE).

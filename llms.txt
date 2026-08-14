@@ -14,7 +14,7 @@ Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-
 - Endpoint boundary: literal loopback hosts only: 127.0.0.1, localhost, or ::1.
 - Runtime Python dependencies: none outside the standard library.
 - Project status: community project; not affiliated with or endorsed by OpenAI or DeepSeek.
-- License status: no license is currently granted by this repository.
+- License: MIT License. See https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/LICENSE.
 
 ## Primary documentation
 

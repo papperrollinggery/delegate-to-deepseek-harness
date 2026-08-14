@@ -279,4 +279,4 @@ python3 scripts/dsh_harness.py --base-url http://192.0.2.10:3080 probe
 
 ## 许可证
 
-本仓库目前没有 `LICENSE`。在维护者明确选择许可证前，公开可见不等于授予复制、修改或再分发许可。DeepSeek Harness 官方仓库的 MIT 许可证不会自动覆盖本仓库。
+本项目采用 [MIT License](LICENSE) 授权。
