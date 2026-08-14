@@ -4,25 +4,38 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit, urlunsplit
 import uuid
 import webbrowser
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX path
+    msvcrt = None
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:3080"
@@ -39,8 +52,12 @@ PROJECT_ROOT_MARKERS = (
 FORBIDDEN_GLOBS = (
     "**/.env", "**/.env.*", "**/*.key", "**/*.pem", "**/*.p12",
     "~/.ssh/**", "~/.gnupg/**", "~/.aws/**", "**/credentials*",
+    "**/.dsh-delegation-history/**",
 )
 CONTROL_FILES = ("RESULT.md", "OPINION.md", "ASK.md")
+RUN_CONTROL_FILES = ("SCOPE.md", "TASK.md", "STATUS.json", *CONTROL_FILES)
+RUN_HISTORY_DIRECTORY = ".dsh-delegation-history"
+DELEGATE_LOCK_DIRECTORY = "delegate-locks"
 
 
 class HarnessError(RuntimeError):
@@ -341,6 +358,128 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def archive_previous_run(directory: str) -> str | None:
+    root = Path(directory).resolve()
+    existing: list[Path] = []
+    for name in RUN_CONTROL_FILES:
+        path = root / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_symlink():
+            raise HarnessError(f"refusing symlinked control file: {path}")
+        resolved = path.resolve()
+        if resolved.parent != root or not resolved.is_file():
+            raise HarnessError(f"invalid control file: {path}")
+        existing.append(resolved)
+    if not existing:
+        return None
+
+    history_root = root / RUN_HISTORY_DIRECTORY
+    if history_root.exists() or history_root.is_symlink():
+        if history_root.is_symlink():
+            raise HarnessError(f"refusing symlinked run history: {history_root}")
+        resolved_history = history_root.resolve()
+        if resolved_history.parent != root or not resolved_history.is_dir():
+            raise HarnessError(f"invalid run history directory: {history_root}")
+    else:
+        history_root.mkdir(mode=0o700)
+    try:
+        history_root.chmod(0o700)
+    except OSError:
+        pass
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive = history_root / f"{timestamp}-{uuid.uuid4().hex[:8]}"
+    archive.mkdir(mode=0o700)
+    for source in existing:
+        os.replace(source, archive / source.name)
+    return str(archive)
+
+
+def reject_running_sessions_for_cwd(
+    client: HarnessClient,
+    directory: str,
+    allowed_session_id: str | None = None,
+) -> None:
+    root = Path(directory).resolve()
+    running_ids: list[str] = []
+    for item in client.sessions():
+        session_cwd = item.get("cwd")
+        if item.get("running") is not True or not isinstance(session_cwd, str):
+            continue
+        try:
+            same_directory = Path(session_cwd).expanduser().resolve() == root
+        except OSError:
+            same_directory = False
+        if same_directory:
+            session_id = item.get("sessionId")
+            if session_id == allowed_session_id:
+                continue
+            running_ids.append(session_id if isinstance(session_id, str) else "unknown")
+    if running_ids:
+        raise HarnessError(
+            "refusing to reuse cwd while a Harness session is still running: "
+            + ", ".join(running_ids)
+        )
+
+
+def delegate_lock_path(directory: str) -> Path:
+    digest = hashlib.sha256(str(Path(directory).resolve()).encode("utf-8")).hexdigest()
+    lock_root = state_directory() / DELEGATE_LOCK_DIRECTORY
+    lock_root.mkdir(mode=0o700, exist_ok=True)
+    try:
+        lock_root.chmod(0o700)
+    except OSError:
+        pass
+    return lock_root / f"{digest}.lock"
+
+
+@contextmanager
+def delegate_directory_lock(directory: str) -> Any:
+    path = delegate_lock_path(directory)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise HarnessError(f"cannot open delegation lock for {directory}: {exc}") from exc
+    locked = False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise HarnessError(f"invalid delegation lock for {directory}")
+        if fcntl is not None:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise HarnessError(
+                    f"another Harness prompting command is already using {directory}"
+                ) from exc
+        elif msvcrt is not None:  # pragma: no cover - Windows fallback
+            if metadata.st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise HarnessError(
+                    f"another Harness prompting command is already using {directory}"
+                ) from exc
+        else:  # pragma: no cover - unsupported Python platform
+            raise HarnessError("this platform has no supported file-locking API")
+        locked = True
+        yield
+    finally:
+        if locked:
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            elif msvcrt is not None:  # pragma: no cover - Windows fallback
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
+
+
 def summary(item: dict[str, Any]) -> dict[str, Any]:
     projections = item.get("projections")
     values = projections.get("values") if isinstance(projections, dict) else None
@@ -530,6 +669,44 @@ def send_prompt(
     return wait_for_prompt(client, session_id, rpc_id, timeout, baseline)
 
 
+def session_directory(client: HarnessClient, session_id: str) -> str:
+    for item in client.sessions():
+        if item.get("sessionId") != session_id:
+            continue
+        cwd = item.get("cwd")
+        if not isinstance(cwd, str):
+            raise HarnessError(f"session has no valid cwd: {session_id}")
+        return require_directory(cwd)
+    raise HarnessError(f"session not found: {session_id}")
+
+
+def send_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, Any]:
+    task = read_task(args)
+    cwd = session_directory(client, args.session_id)
+    with delegate_directory_lock(cwd):
+        reject_running_sessions_for_cwd(client, cwd, args.session_id)
+        return send_prompt(client, args.session_id, task, True, args.timeout)
+
+
+def run_task(
+    client: HarnessClient,
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    task = read_task(args)
+    cwd = require_directory(args.cwd)
+    with delegate_directory_lock(cwd):
+        reject_running_sessions_for_cwd(client, cwd)
+        created = create_session(client, args)
+        outcome = send_prompt(
+            client,
+            created["sessionId"],
+            task,
+            not args.no_wait,
+            args.timeout,
+        )
+    return created, outcome
+
+
 def write_status_file(
     cwd: str,
     status: str,
@@ -548,10 +725,15 @@ def write_status_file(
     return payload
 
 
-def delegate_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, Any]:
-    cwd = ensure_directory(args.cwd)
+def _delegate_task_locked(
+    client: HarnessClient,
+    args: argparse.Namespace,
+    cwd: str,
+) -> dict[str, Any]:
     task = read_task(args)
     task_type, decision = classify_scope(args.scope, cwd, task)
+    reject_running_sessions_for_cwd(client, cwd)
+    previous_run_archive = archive_previous_run(cwd)
     atomic_write_text(cwd, "SCOPE.md", scope_document(cwd, task_type, decision))
     atomic_write_text(cwd, "TASK.md", task_document(task, task_type, decision))
     session_id: str | None = None
@@ -566,6 +748,7 @@ def delegate_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, 
             model=created["model"],
             preset=created["preset"],
             scope=task_type,
+            previousRunArchive=previous_run_archive,
         )
         prompt = (
             "先读取当前工作目录中的 SCOPE.md 和 TASK.md，再严格按其中范围执行任务。"
@@ -594,6 +777,7 @@ def delegate_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, 
             preset=created["preset"],
             scope=task_type,
             rpcId=outcome.get("rpcId"),
+            previousRunArchive=previous_run_archive,
         )
         return {
             **created,
@@ -606,11 +790,25 @@ def delegate_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, 
                 "scope": str(Path(cwd) / "SCOPE.md"),
                 "result": str(Path(cwd) / "RESULT.md"),
                 "status": str(Path(cwd) / "STATUS.json"),
+                "previousRunArchive": previous_run_archive,
             },
         }
     except (HarnessError, OSError) as exc:
-        write_status_file(cwd, "error", session_id, str(exc), scope=task_type)
+        write_status_file(
+            cwd,
+            "error",
+            session_id,
+            str(exc),
+            scope=task_type,
+            previousRunArchive=previous_run_archive,
+        )
         raise
+
+
+def delegate_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, Any]:
+    cwd = ensure_directory(args.cwd)
+    with delegate_directory_lock(cwd):
+        return _delegate_task_locked(client, args, cwd)
 
 
 def read_back(directory: str) -> dict[str, Any]:
@@ -642,7 +840,13 @@ def directory_status(client: HarnessClient, directory: str) -> dict[str, Any]:
 
 
 def state_directory() -> Path:
-    path = Path(tempfile.gettempdir()) / f"deepseek-harness-delegate-{os.getuid()}"
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        user_key = str(getuid())
+    else:  # pragma: no cover - exercised through a simulated Windows test
+        home = str(Path.home().resolve())
+        user_key = hashlib.sha256(home.encode("utf-8")).hexdigest()[:16]
+    path = Path(tempfile.gettempdir()) / f"deepseek-harness-delegate-{user_key}"
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         path.chmod(0o700)
@@ -876,14 +1080,12 @@ def main() -> int:
     elif args.command == "create":
         emit({"status": "created", **create_session(client, args)})
     elif args.command == "send":
-        outcome = send_prompt(client, args.session_id, read_task(args), True, args.timeout)
+        outcome = send_task(client, args)
         emit(outcome)
         if outcome.get("status") not in ("accepted", "completed"):
             return 2
     elif args.command == "run":
-        task = read_task(args)
-        created = create_session(client, args)
-        outcome = send_prompt(client, created["sessionId"], task, not args.no_wait, args.timeout)
+        created, outcome = run_task(client, args)
         if args.no_wait:
             emit({"sessionId": outcome["sessionId"], "rpcId": outcome["rpcId"]})
         else:

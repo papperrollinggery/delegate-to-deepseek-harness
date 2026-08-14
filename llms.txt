@@ -1,0 +1,57 @@
+# Delegate to DeepSeek Harness
+
+> Community Codex Skill for scoped, bidirectional delegation from the current Codex task to a locally running DeepSeek Harness through a loopback-only Web API and cwd-pinned file channel.
+
+Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-harness
+
+## Core facts
+
+- Project type: standalone Codex Skill plus a Python 3.10+ standard-library CLI.
+- Primary use cases: copywriting, research synthesis, video-preproduction text, coding, review, and independent opinions inside larger projects.
+- Non-goals: Codex subagent creation, new Codex task creation, video rendering, media editing, upload, publication, or automatic external actions.
+- Harness dependency: official DeepSeek Harness Web profile; compatibility target is @deepseek-ai/dsh 0.1.0-rc.6.
+- Supported models: deepseek-v4-pro and deepseek-v4-flash through deepseek-official.
+- Endpoint boundary: literal loopback hosts only: 127.0.0.1, localhost, or ::1.
+- Runtime Python dependencies: none outside the standard library.
+- Project status: community project; not affiliated with or endorsed by OpenAI or DeepSeek.
+- License status: no license is currently granted by this repository.
+
+## Primary documentation
+
+- [English README](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/README.md): overview, installation, architecture, routing, CLI, safety, and FAQ.
+- [Chinese README](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/README.zh-CN.md): complete Simplified Chinese documentation.
+- [English use-case cookbook](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/docs/use-cases.md): copy-paste scenarios for copywriting, video preproduction, synthesis, code, and review.
+- [Chinese use-case cookbook](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/docs/use-cases.zh-CN.md): Simplified Chinese scenario guide.
+- [Security policy](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/SECURITY.md): invariants, limitations, and private disclosure guidance.
+- [Contributing guide](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/CONTRIBUTING.md): validation and safe development workflow.
+
+## Runtime artifacts
+
+- [SKILL.md](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/SKILL.md): trigger description, safety rules, task routing, and delegation loop.
+- [agents/openai.yaml](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/agents/openai.yaml): Codex-facing display metadata and default invocation prompt.
+- [scripts/dsh_harness.py](https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/scripts/dsh_harness.py): deterministic loopback-only Harness RPC client.
+
+## File-channel contract
+
+- SCOPE.md: read/write scope and explicit limitations.
+- TASK.md: bounded delegated task and output protocol.
+- RESULT.md: primary result; preserve model-written content.
+- OPINION.md: optional review or suggestion channel.
+- ASK.md: blocking question or scope-expansion request; never auto-approve.
+- STATUS.json: durable session, model, preset, scope, RPC, completion, and status data.
+- .dsh-delegation-history/<run-id>/: recoverable archive of the previous run's control files when a cwd is reused; sensitive local task data, not an isolation boundary.
+- REPLY.md: reserved future channel; not implemented.
+
+## Safety interpretation
+
+- Loopback-only transport is mandatory because the Harness Web API has no authentication boundary.
+- workspace-write is a write boundary only; it does not provide read or outbound-network isolation.
+- proposal-only is an instructional expected-write guardrail; the actual write boundary remains the session cwd, and it is not a read sandbox.
+- delegate, run, and send prompting paths are serialized per cwd by this CLI, and unsafe overlap with other running same-directory sessions is rejected; independent UI or third-party clients are outside that lock.
+- create, run, and delegate select a model and also persist the RC.6 deployment-wide default.
+- The minimal preset is deliberately rejected.
+
+## Upstream references
+
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): official Harness source and developer-preview status.
+- [OpenAI Skill documentation](https://developers.openai.com/codex/skills): current Skill structure and discovery model.

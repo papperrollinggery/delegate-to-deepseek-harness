@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible defect in the Skill or Python client
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, credentials, private client data, Harness homes, or unsanitized session logs. Report suspected vulnerabilities privately through SECURITY.md.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or version
+      placeholder: main at abc1234
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Python version, Codex surface, and dsh version.
+      placeholder: macOS 15; Python 3.13; Codex desktop; dsh 0.1.0-rc.6
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest safe steps that reproduce the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized evidence
+      description: Include exact errors or exit codes after removing sensitive data.
+    validations:
+      required: true
+  - type: dropdown
+    id: existing_sessions
+    attributes:
+      label: Did the reproduction mutate a pre-existing Harness session?
+      options:
+        - "No"
+        - "Yes"
+        - "Unknown"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed secrets, private data, and unsanitized logs.
+          required: true
+        - label: This is not a vulnerability report.
+          required: true

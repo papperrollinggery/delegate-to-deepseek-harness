@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a focused, safety-compatible improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What bounded delegation workflow is currently difficult or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe inputs, outputs, scope, and expected verification.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain why existing commands or scopes are insufficient.
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security and compatibility impact
+      description: Address loopback, credentials, filesystem scope, model-default side effects, and Harness-version assumptions.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundary confirmation
+      options:
+        - label: The proposal does not require exposing the Harness Web API outside loopback.
+          required: true
+        - label: The proposal does not auto-approve external actions or scope expansion.
+          required: true

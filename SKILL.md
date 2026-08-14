@@ -1,6 +1,6 @@
 ---
 name: delegate-to-deepseek-harness
-description: "Use a locally running DeepSeek Harness for scoped, bidirectional collaboration over its loopback Web API and a cwd-pinned file channel: delegate work, ask DeepSeek to implement, review, or give opinions, read back results, opinions, and scope questions, continue conversations, inspect status, or control the local Harness service. Trigger when the user asks Codex to let DeepSeek or DeepSeek Harness handle part of a task, consult DeepSeek, collect its suggestions, or read back delegated work without creating a new Codex thread."
+description: "Use a locally running DeepSeek Harness for scoped, bidirectional collaboration over its loopback Web API and a cwd-pinned file channel. Delegate bounded copywriting, research synthesis, video-preproduction text, coding, review, or opinion work; read back results, suggestions, scope questions, and live status; continue an existing conversation; or control the local Harness service. Trigger when the user asks Codex to let DeepSeek or DeepSeek Harness handle part of a task, consult DeepSeek, collect a second opinion, process one workstream inside a complex project, or read back delegated work without creating a new Codex thread."
 ---
 
 # Delegate to DeepSeek Harness
@@ -15,11 +15,20 @@ Use `scripts/dsh_harness.py` as the deterministic client. It speaks the Harness 
 - Use `code` only for an explicitly coding-focused task. Use `cordis` only when the user explicitly asks to develop or alter Harness compositions.
 - Choose `--cwd` from the actual task scope: a dedicated directory for self-contained work, the project root for cross-file work, and the project root plus `proposal-only` for advice that must not modify project files. Never select a home directory, credential directory, or unrelated client-data tree.
 - Treat `workspace-write` as a write boundary only. It does not protect same-user readable secrets or restrict outbound network access.
+- Treat `proposal-only` as an instructional expected-write guardrail. The actual Harness session write boundary remains the selected `cwd`; do not use `proposal-only` as read isolation or as protection for sensitive project files.
 - Treat `--model` as a deployment-setting mutation. In RC.6, `session.selectModel` selects the new session model and also persists it as the deployment-wide `agent-default-model`; there is no separate pure session-only RPC. `create`, `run`, and `delegate` call it, defaulting to `deepseek-v4-pro`. An explicit `--model deepseek-v4-flash` therefore also changes the default observed by later blank sessions and the Web UI. If preserving the current deployment default is required, do not create a session with these commands; use an existing session with `send` or stop and ask before proceeding.
 - Delegation never expands the user's authorization. Do not ask Harness to publish, deploy, message, pay, delete, expose credentials, or mutate external systems unless the user authorized that action.
 - Do not pass secrets in task text. Never read or write Harness credentials through this Skill.
 - Never auto-answer approval or question prompts. If a wait times out while the session remains active, tell the user to resolve the pending interaction in the Web UI.
 - Report the session id, preset, working directory, completion reason, and any unverified state.
+
+## Route the workstream
+
+- For copywriting, research synthesis, transcript structuring, and video-preproduction text, use `standard` with the narrowest dedicated workstream directory. Treat storylines, scripts, shot descriptions, on-screen copy, subtitle cleanup, and generation-prompt review as text work; do not claim this Skill renders, edits, or publishes video.
+- For source-file implementation or repository-wide code review, use `code` and select the smallest project root that contains every required file.
+- For an opinion, audit, or draft that must not alter project files, use `proposal-only`. Prefer this scope for first-pass copy alternatives and video treatment reviews.
+- For fast, low-risk iterations, use `deepseek-v4-flash` only when the shared default-model mutation is acceptable. Keep `deepseek-v4-pro` as the default for nuanced writing, multi-file reasoning, and higher-cost error surfaces.
+- Use `cordis` only when the user explicitly asks to develop or alter Harness compositions. Reject `minimal` in every workflow.
 
 ## Core workflow
 
@@ -42,7 +51,7 @@ Use `scripts/dsh_harness.py` as the deterministic client. It speaks the Harness 
    - `proposal-only`: read the project but only write collaboration control files.
    - Work outside the selected root, including `.env`, keys, system paths, or another project: delegate a proposal/diff only, or obtain explicit user authorization first.
 
-4. Prefer `delegate` for a new task. It writes `SCOPE.md` and `TASK.md`, creates a cwd-pinned session, waits for a durable `turn/end`, writes `STATUS.json`, and preserves the model-written `RESULT.md` (falling back to final assistant text only when that file is missing):
+4. Prefer `delegate` for a new task. It serializes calls for the selected directory, refuses reuse while a same-directory Harness session is running, archives the previous file channel, writes `SCOPE.md` and `TASK.md`, creates a cwd-pinned session, waits for a durable `turn/end`, writes `STATUS.json`, and preserves the model-written `RESULT.md` (falling back to final assistant text only when that file is missing):
 
    ```sh
    python3 scripts/dsh_harness.py delegate \
@@ -95,6 +104,9 @@ For long or shell-sensitive prompts, write a scoped temporary text file with the
 - `OPINION.md`: optional review comments or suggestions from DeepSeek.
 - `ASK.md`: a question or request for scope expansion; do not auto-approve it.
 - `STATUS.json`: durable status plus `sessionId`, completion reason, model, preset, scope, and update time.
+- `.dsh-delegation-history/<run-id>/`: recoverable archive of the previous run's control files when `delegate` reuses a working directory. Keep it out of version control and treat it as sensitive task data, not as tamper-evident storage.
+
+Do not prompt another Harness session for the selected `cwd` while a task is running. The per-directory lock coordinates this CLI's `delegate`, `run`, and `send` paths, not independent UI or third-party Harness clients.
 
 `read-back` reads `RESULT.md`, `OPINION.md`, and `ASK.md`. `status` combines `STATUS.json` with the live `running` value from `session.list`.
 

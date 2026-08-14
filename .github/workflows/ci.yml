@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile Python sources
+        run: python -m compileall -q scripts tests
+
+      - name: Run unit and repository tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Verify CLI help
+        run: python scripts/dsh_harness.py --help
+
+      - name: Verify non-loopback rejection
+        shell: bash
+        run: |
+          if python scripts/dsh_harness.py --base-url http://192.0.2.10:3080 probe; then
+            echo "Expected non-loopback endpoint rejection"
+            exit 1
+          fi
