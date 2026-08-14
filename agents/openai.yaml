@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeepSeek Harness Delegator"
+  short_description: "按范围委派 DeepSeek，收集意见并读回结果"
+  default_prompt: "使用 $delegate-to-deepseek-harness 按任务范围委派给本机 DeepSeek Harness，并读回结果、意见或范围问题。"
