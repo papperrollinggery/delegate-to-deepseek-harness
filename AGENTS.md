@@ -16,6 +16,8 @@ Public repository: `https://github.com/papperrollinggery/delegate-to-deepseek-ha
 - `SKILL.md`: triggering metadata, operating workflow, safety rules, and delegation-loop contract.
 - `agents/openai.yaml`: UI-facing Skill metadata.
 - `scripts/dsh_harness.py`: Python 3 standard-library client for the local Harness RPC API.
+- `VERSION`: installed and published Skill version.
+- `scripts/check-update.sh`, `scripts/install-global.sh`, `scripts/update-global.sh`: approval-aware update detection and global installation lifecycle.
 
 The installed runtime copy normally lives at:
 
@@ -31,14 +33,15 @@ Keep this repository as the development source and the Codex Skills directory as
 - Default endpoint: `http://127.0.0.1:3080`.
 - Supported models: `deepseek-v4-pro` and `deepseek-v4-flash` through provider `deepseek-official`.
 - `minimal` preset is deliberately rejected.
-- `delegate` creates `SCOPE.md`, `TASK.md`, `STATUS.json`, and a cwd-pinned Harness session.
+- `delegate` creates `SCOPE.md`, `TASK.md`, `STATUS.json`, and a cwd-pinned Harness session, then returns after prompt acceptance by default.
+- `collect` checks or waits for the recorded `sessionId`/`rpcId`, preserves `RESULT.md`, and finalizes durable status. There is no default wall-clock wait limit.
 - A model-written `RESULT.md` is preserved. Final assistant text is used only when `RESULT.md` is missing.
 - `read-back` reads `RESULT.md`, `OPINION.md`, and `ASK.md`; `status` combines `STATUS.json` with live session state.
 - `REPLY.md` is a proposed future append-only response channel; it is not implemented yet.
 
 ## Safety invariants
 
-- Accept only loopback Harness endpoints: `127.0.0.1`, `localhost`, or `::1`.
+- Accept only loopback Harness RPC endpoints: `127.0.0.1`, `localhost`, or `::1`. The separate daily update check may read only this repository's public latest-release metadata and must never send task content.
 - Never expose the Harness Web API on a non-loopback interface. It has no authentication boundary.
 - Treat `workspace-write` as a write boundary only. It does not restrict reads or outbound network access.
 - Never pass, read, print, persist, or publish model credentials or task secrets.
@@ -77,14 +80,10 @@ Do not commit the disposable directory.
 
 ## Install or refresh the runtime copy
 
-After the Work repository version passes validation, sync only the Skill artifacts:
+After the Work repository version passes validation, install only the maintained runtime artifacts:
 
 ```sh
-install_dir="${CODEX_HOME:-$HOME/.codex}/skills/delegate-to-deepseek-harness"
-mkdir -p "$install_dir/agents" "$install_dir/scripts"
-rsync -a SKILL.md "$install_dir/SKILL.md"
-rsync -a agents/openai.yaml "$install_dir/agents/openai.yaml"
-rsync -a scripts/dsh_harness.py "$install_dir/scripts/dsh_harness.py"
+bash scripts/install-global.sh
 ```
 
 Then compare hashes and confirm the script remains executable. Open a fresh Codex task when Skill discovery or updated instructions must be verified.

@@ -20,9 +20,9 @@ Do not include API keys, credentials, private client data, or an active exploit 
 
 Changes must preserve these boundaries:
 
-1. **Loopback only.** Accept only literal `127.0.0.1`, `localhost`, or `::1` HTTP endpoints and verify that hostname resolution remains loopback.
-2. **No proxy or redirect escape.** Disable environment proxy use and do not follow HTTP redirects.
-3. **No URL credentials.** Reject endpoints containing usernames or passwords.
+1. **Harness RPC stays loopback only.** Accept only literal `127.0.0.1`, `localhost`, or `::1` Harness endpoints and verify that hostname resolution remains loopback.
+2. **No Harness proxy or redirect escape.** Disable environment proxy use for Harness RPC and do not follow Harness HTTP redirects.
+3. **No Harness URL credentials.** Reject Harness endpoints containing usernames or passwords.
 4. **Narrow working directory.** Reject filesystem roots and the user-home root; choose the smallest directory that contains the task.
 5. **No secret delegation.** Reject obvious secret patterns and never read, write, print, or publish Harness credentials through this Skill.
 6. **No symlinked control files.** Refuse collaboration files that can escape their resolved working directory.
@@ -31,10 +31,12 @@ Changes must preserve these boundaries:
 9. **No automatic approval.** Never auto-answer a Harness approval, question, or request for scope expansion.
 10. **No pre-existing session mutation in tests.** End-to-end tests may create sessions but must not prompt, cancel, rename, or otherwise mutate existing ones.
 11. **No same-directory prompt overlap through this client.** Serialize `delegate`, `run`, and `send` per resolved working directory. Reject unsafe overlap with other running Harness sessions for that directory.
+12. **Update checks are read-only and approval-gated.** `check-update.sh` may read only this repository's public latest-release metadata, must not send task content, and must fail silently. `update-global.sh` runs only after explicit user approval and verifies the downloaded archive version before installation.
 
 ## Important limitations
 
 - The DeepSeek Harness Web API is not an authentication boundary. Never expose it on a LAN or public interface.
+- The optional daily update check contacts `api.github.com` with a short read-only request; an approved update then downloads the matching tag archive from `github.com`. Disable checks with `DSH_DISABLE_UPDATE_CHECK=1` when no non-loopback traffic is desired.
 - `workspace-write` limits writes; it does not restrict same-user reads or outbound network access.
 - `proposal-only` narrows expected writes to collaboration control files; it is not read isolation.
 - In the targeted RC.6 behavior, `session.selectModel` also persists the Harness deployment-wide default model.

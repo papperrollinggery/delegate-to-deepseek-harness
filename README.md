@@ -2,9 +2,10 @@
 
 # Delegate to DeepSeek Harness
 
-**A scoped, local-first Codex Skill for bidirectional collaboration with DeepSeek Harness**
+**Asynchronous DeepSeek delegation for Codex — keep working while long-running Harness tasks run in parallel**
 
 [![CI](https://github.com/papperrollinggery/delegate-to-deepseek-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/papperrollinggery/delegate-to-deepseek-harness/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/papperrollinggery/delegate-to-deepseek-harness)](https://github.com/papperrollinggery/delegate-to-deepseek-harness/releases/latest)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Zero third-party Python packages](https://img.shields.io/badge/Python_packages-stdlib_only-2EA44F)
 ![Loopback only](https://img.shields.io/badge/network-loopback_only-6F42C1)
@@ -13,7 +14,7 @@
 
 </div>
 
-Delegate bounded work from the current Codex task to a locally running [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). The Skill uses the Harness loopback Web API and a durable, working-directory-pinned file channel so Codex can assign a workstream, wait for a real turn ending, read the result back, and continue in the same task.
+Delegate bounded work from the current Codex task to a locally running [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), then let Codex continue independent work immediately. This asynchronous DeepSeek–Codex collaboration Skill uses the Harness loopback Web API and a durable, working-directory-pinned file channel to submit tasks, monitor multi-hour runs without an arbitrary 900-second limit, collect a verified `turn/end`, and continue the same conversation.
 
 It is designed for focused copywriting, research synthesis, video-preproduction text, coding, review, and second-opinion workflows inside larger projects. It does **not** spawn a Codex subagent, create another Codex task, render video, or publish anything.
 
@@ -24,6 +25,8 @@ It is designed for focused copywriting, research synthesis, video-preproduction 
 | Question | Answer |
 | --- | --- |
 | What is it? | A standalone Codex Skill plus a Python standard-library client for DeepSeek Harness. |
+| Can Codex and DeepSeek work in parallel? | Yes. `delegate` returns after acceptance; Codex continues other work and later uses `collect`. |
+| How long can a task run? | There is no default wall-clock wait limit. An optional client deadline never cancels the Harness task. |
 | Where does it connect? | Only to literal loopback hosts: `127.0.0.1`, `localhost`, or `::1`. |
 | Which Harness version is targeted? | `@deepseek-ai/dsh 0.1.0-rc.6` Web profile. |
 | Which models are supported? | `deepseek-v4-pro` and `deepseek-v4-flash` through `deepseek-official`. |
@@ -36,8 +39,11 @@ It is designed for focused copywriting, research synthesis, video-preproduction 
 Calling a second model is easy. Keeping that collaboration scoped, observable, and recoverable is the hard part.
 
 - **Bounded delegation** — pin every new session to an explicit working directory and task scope.
+- **Parallel execution** — return after Harness accepts the task so Codex can advance an independent workstream.
+- **Long-running jobs** — monitor real session health and collect results without a fixed 900-second task limit.
 - **Durable handoff** — preserve task, scope, result, opinion, question, and status files on disk.
-- **Verified completion** — wait for the matching `turn/end`; do not treat a queued prompt as finished work.
+- **Verified completion** — collect the matching `turn/end`; do not treat a queued prompt as finished work.
+- **Update awareness** — check once per day for a published Skill version and ask before installing it.
 - **Bidirectional work** — read results back, inspect live status, and continue the same Harness session.
 - **Local control plane** — refuse non-loopback endpoints, redirects, credential-bearing URLs, and broad root directories.
 - **Honest safety model** — treat `workspace-write` as a write boundary, not as read or network isolation.
@@ -61,13 +67,14 @@ See the [copy-paste use-case cookbook](docs/use-cases.md) for detailed prompts, 
 flowchart LR
     U["User in the current Codex task"] --> C["Codex + SKILL.md"]
     C --> P["scripts/dsh_harness.py"]
+    C --> W["Independent Codex work"]
     P <-->|"HTTP RPC on loopback only"| H["DeepSeek Harness Web profile"]
     P <-->|"cwd-pinned file channel"| F["SCOPE · TASK · RESULT · STATUS"]
     H --> D["DeepSeek V4 Pro / Flash"]
     F --> C
 ```
 
-The orchestration loop stays in the current Codex task. `delegate` writes the scope and task contract, creates a Harness session pinned to `--cwd`, waits for the corresponding completed turn, preserves a model-written `RESULT.md`, and records a durable status file.
+The orchestration loop stays in the current Codex task. `delegate` writes the scope and task contract, creates a Harness session pinned to `--cwd`, records the accepted `sessionId` and `rpcId`, and returns. Codex can keep working, use `status` or a short `collect --timeout 1` check at natural checkpoints, and finally collect the corresponding completed turn. A client wait deadline never cancels the Harness work.
 
 ## Requirements
 
@@ -77,7 +84,7 @@ The orchestration loop stays in the current Codex task. `delegate` writes the sc
 - DeepSeek Harness Web profile; this repository currently targets `@deepseek-ai/dsh 0.1.0-rc.6`
 - DeepSeek provider credentials configured directly in Harness, never in this repository or delegated task text
 
-The client is tested locally on macOS and in Linux CI. Its Windows file-locking fallback is not yet covered by live end-to-end verification.
+The client is tested locally on macOS and in Linux CI. Its Windows file-locking fallback is not yet covered by live end-to-end verification, and `start`/`stop` require POSIX process and signal support.
 
 ## Install
 
@@ -101,22 +108,29 @@ npx @deepseek-ai/dsh@0.1.0-rc.6 web
 
 The Skill's `start` command requires `dsh` to be installed on `PATH`.
 
+Without `--dsh-home`, `start` uses a disposable Harness home under the OS temporary directory, so it does not reuse provider configuration or sessions from the normal Harness home. Pass a known Harness home explicitly when reuse is intended. On Windows or another non-POSIX platform, start Harness manually and use the RPC commands only.
+
 ### 2. Install the Codex Skill
 
-Clone the repository and copy only the runtime artifacts:
+Clone the repository and run the tested global installer. It copies only runtime artifacts into `${CODEX_HOME:-$HOME/.codex}/skills`:
 
 ```sh
 git clone https://github.com/papperrollinggery/delegate-to-deepseek-harness.git
 cd delegate-to-deepseek-harness
-
-install_dir="${CODEX_HOME:-$HOME/.codex}/skills/delegate-to-deepseek-harness"
-mkdir -p "$install_dir/agents" "$install_dir/scripts"
-rsync -a SKILL.md "$install_dir/SKILL.md"
-rsync -a agents/openai.yaml "$install_dir/agents/openai.yaml"
-rsync -a scripts/dsh_harness.py "$install_dir/scripts/dsh_harness.py"
+bash scripts/install-global.sh
 ```
 
 Open a fresh Codex task after installation so Skill discovery is refreshed.
+
+### 3. Update checks
+
+When the Skill is used, `scripts/check-update.sh` reads GitHub's latest published release metadata at most once per day. It is silent when current or offline. When a newer release exists, Codex should ask before running:
+
+```sh
+bash scripts/update-global.sh
+```
+
+The updater downloads the matching GitHub release tag and reuses the global installer. It never runs without user approval. Set `DSH_DISABLE_UPDATE_CHECK=1` to disable automatic checks.
 
 ## Quick start
 
@@ -137,7 +151,28 @@ preproduction: do not render, edit, upload, or publish media. Return a proposal
 and flag unsupported claims.
 ```
 
-Codex should probe the service, choose the narrowest scope, delegate, read `RESULT.md`, inspect `STATUS.json`, and report the session ID, preset, working directory, completion reason, and remaining uncertainty.
+Codex should probe the service, choose the narrowest scope, submit the task, continue independent work, collect the result, inspect `STATUS.json`, and report the session ID, preset, working directory, completion reason, and remaining uncertainty.
+
+## Parallel and long-running workflow
+
+`delegate` is asynchronous by default. It returns once Harness accepts the prompt, so a task that takes several hours does not hold Codex at the command line:
+
+```sh
+python3 scripts/dsh_harness.py delegate \
+  --cwd /absolute/project/path \
+  --scope proposal-only \
+  --text-file /absolute/project/deepseek-task.txt
+
+# Codex does other independent work here.
+python3 scripts/dsh_harness.py status --cwd /absolute/project/path
+python3 scripts/dsh_harness.py collect --cwd /absolute/project/path --timeout 1
+
+# When the result becomes a hard dependency, collect without a deadline.
+python3 scripts/dsh_harness.py collect --cwd /absolute/project/path
+python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
+```
+
+`--timeout` is an optional client-side wait deadline, not a DeepSeek execution limit. Reaching it returns `pending`/`running`, preserves the same `sessionId` and `rpcId`, and never cancels the Harness turn. With no deadline, the client keeps waiting while the session is active and reports `stalled` only when Harness has stopped reporting it as running for a grace period without a matching `turn/end`. Use `delegate --wait` only when no independent Codex work can proceed.
 
 ## Choose the right route
 
@@ -177,7 +212,8 @@ python3 scripts/dsh_harness.py --help
 | --- | --- |
 | `probe` | Check Web and RPC readiness |
 | `list` | List concise session summaries |
-| `delegate` | Create a scoped file-channel task and wait |
+| `delegate` | Submit a scoped file-channel task and return after acceptance |
+| `collect` | Check or wait for the recorded turn and finalize `RESULT.md` / `STATUS.json` |
 | `read-back` | Read `RESULT.md`, `OPINION.md`, and `ASK.md` |
 | `status` | Combine durable status with live session state |
 | `send` | Continue an existing Harness session |
@@ -185,10 +221,12 @@ python3 scripts/dsh_harness.py --help
 | `result` | Read the last completed turn |
 | `create` / `run` | Use lower-level session and prompt flows |
 | `cancel` | Cancel an active turn only when requested or necessary |
-| `start` / `stop` | Start a loopback service or stop only a service owned by this client |
+| `start` / `stop` | Start a loopback service; stop only a service owned by this client and refuse while sessions are running |
 | `open-ui` | Open the already-running local Web UI |
 
 For long or shell-sensitive instructions, use `--text-file` rather than a large inline `--text` value.
+
+The low-level `wait --baseline-seq N --baseline-fallback` recovery mode is only safe for a fresh session where no earlier turn can finish after baseline `N` (for example, `run --no-wait`). Never enable it for a prompt queued behind an existing running turn. Normal `delegate`/`collect` handles this automatically.
 
 ## File channel contract
 
@@ -199,7 +237,7 @@ For long or shell-sensitive instructions, use `--text-file` rather than a large 
 | `RESULT.md` | Primary result; a model-written file is preserved |
 | `OPINION.md` | Optional review comments or suggestions |
 | `ASK.md` | Scope-expansion request or blocking question; never auto-approved |
-| `STATUS.json` | Durable session ID, model, preset, scope, RPC ID, status, reason, and update time |
+| `STATUS.json` | Durable session ID, RPC ID, pre-prompt baseline sequence, model, preset, scope, status, reason, and update time |
 
 The `delegate`, `run`, and `send` prompting paths share a per-directory process lock outside the workspace. Before `delegate` reuses a working directory, it also refuses to proceed while any Harness session for that `cwd` is still running, then moves the previous run's control files into `.dsh-delegation-history/<run-id>/`. This preserves the earlier files and prevents already-existing stale `RESULT.md`, `OPINION.md`, or `ASK.md` content from being read as the current result. Treat the history directory as sensitive task data and keep it out of version control.
 
@@ -217,6 +255,7 @@ This client provides guardrails, not a security sandbox.
 - Assume `workspace-write` restricts writes only. It does not restrict same-user reads or outbound network access.
 - Never delegate credentials, private keys, payment actions, publishing, deployment, or destructive changes without explicit authorization.
 - Never auto-answer a Harness approval or scope question.
+- The daily update check makes one short read-only request to this repository's public latest-release metadata, sends no task content, and can be disabled with `DSH_DISABLE_UPDATE_CHECK=1`. Installation still requires user approval.
 
 Read the full [security policy and disclosure guidance](SECURITY.md).
 
@@ -229,6 +268,14 @@ No. It is a community Codex Skill that integrates with the official DeepSeek Har
 ### Does it create another Codex task or subagent?
 
 No. The control loop remains in the current Codex task. DeepSeek work runs in a separate local Harness session, not as a Codex subagent.
+
+### Can Codex keep working while DeepSeek runs for hours?
+
+Yes. `delegate` returns after prompt acceptance. Codex should continue any independent work, use `status` or short `collect --timeout 1` checks at natural checkpoints, and call `collect` without a deadline only when the result becomes a hard dependency. There is no default 900-second task limit.
+
+### Does the Skill update itself silently?
+
+No. It checks GitHub's latest published release metadata at most once per day and stays silent when current or offline. If a newer release exists, it asks the user before `update-global.sh` downloads and installs that release.
 
 ### Can it generate or edit a video?
 
@@ -251,12 +298,16 @@ In the targeted RC.6 behavior, `session.selectModel` also persists the deploymen
 The runtime surface intentionally stays small:
 
 ```text
-SKILL.md                 Skill trigger and operating contract
-agents/openai.yaml       Codex-facing display metadata
-scripts/dsh_harness.py   Loopback-only standard-library RPC client
+VERSION                   Installed and published Skill version
+SKILL.md                  Skill trigger and operating contract
+agents/openai.yaml        Codex-facing display metadata
+scripts/dsh_harness.py    Loopback-only standard-library RPC client
+scripts/check-update.sh   Quiet daily release check
+scripts/install-global.sh Global Codex Skill installer
+scripts/update-global.sh  Approval-gated release updater
 ```
 
-The recommended artifact-sync installation above keeps repository documentation, tests, CI, and community files out of the installed runtime Skill.
+The maintained installer keeps repository documentation, tests, CI, and community files out of the installed runtime Skill.
 
 Run the local release gates:
 

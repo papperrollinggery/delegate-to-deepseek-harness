@@ -39,8 +39,10 @@ except ImportError:  # pragma: no cover - POSIX path
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:3080"
-DEFAULT_TIMEOUT = 900.0
+DEFAULT_TIMEOUT: float | None = None
 POLL_INTERVAL = 1.0
+HEALTH_CHECK_INTERVAL = 15.0
+INACTIVE_GRACE = 60.0
 START_TIMEOUT = 20.0
 ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 MODELS = ("deepseek-v4-pro", "deepseek-v4-flash")
@@ -582,6 +584,20 @@ def last_completed_turn(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     return completed_turn(events, max(endings)[1]) if endings else None
 
 
+def first_completed_turn_after(
+    events: list[dict[str, Any]], baseline: int
+) -> dict[str, Any] | None:
+    endings: list[tuple[int, int]] = []
+    for event in events:
+        if event.get("type") != "turn/end":
+            continue
+        turn = event_data(event).get("turn")
+        seq = event.get("seq")
+        if isinstance(turn, int) and isinstance(seq, int) and seq > baseline:
+            endings.append((seq, turn))
+    return completed_turn(events, min(endings)[1]) if endings else None
+
+
 def running_state(client: HarnessClient, session_id: str) -> bool | None:
     for item in client.sessions():
         if item.get("sessionId") == session_id:
@@ -593,11 +609,16 @@ def wait_for_prompt(
     client: HarnessClient,
     session_id: str,
     rpc_id: str,
-    timeout: float,
+    timeout: float | None,
     baseline: int | None = None,
+    allow_baseline_fallback: bool = False,
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
+    started_at = time.monotonic()
+    deadline = started_at + timeout if timeout is not None else None
+    next_health_check = started_at
     target_turn: int | None = None
+    last_running: bool | None = None
+    inactive_since: float | None = None
     while True:
         events = client.history(session_id)
         if baseline is None:
@@ -609,16 +630,56 @@ def wait_for_prompt(
         if baseline is not None and target_turn is not None:
             result = completed_turn(events, target_turn)
             if result is not None and isinstance(result.get("turnEndSeq"), int) and result["turnEndSeq"] > baseline:
-                return {"sessionId": session_id, "rpcId": rpc_id, **result}
-        if time.monotonic() >= deadline:
+                return {
+                    "sessionId": session_id,
+                    "rpcId": rpc_id,
+                    "baselineSeq": baseline,
+                    **result,
+                }
+        elif baseline is not None and allow_baseline_fallback:
+            result = first_completed_turn_after(events, baseline)
+            if result is not None:
+                return {
+                    "sessionId": session_id,
+                    "rpcId": rpc_id,
+                    "baselineSeq": baseline,
+                    **result,
+                }
+        now = time.monotonic()
+        if now >= next_health_check:
+            last_running = running_state(client, session_id)
+            next_health_check = now + HEALTH_CHECK_INTERVAL
+            if last_running is True:
+                inactive_since = None
+            elif inactive_since is None:
+                inactive_since = now
+            elif now - inactive_since >= INACTIVE_GRACE:
+                return {
+                    "status": "stalled",
+                    "sessionId": session_id,
+                    "rpcId": rpc_id,
+                    "baselineSeq": baseline,
+                    "targetTurn": target_turn,
+                    "running": last_running,
+                    "waitReason": "session-not-running-without-turn-end",
+                    "guidance": (
+                        "Harness stopped reporting this session as running without a matching turn/end. "
+                        "The task was not cancelled; inspect status and the Web UI before retrying or cancelling."
+                    ),
+                }
+        if deadline is not None and now >= deadline:
             return {
-                "status": "timeout",
+                "status": "pending",
                 "sessionId": session_id,
                 "rpcId": rpc_id,
                 "baselineSeq": baseline,
                 "targetTurn": target_turn,
-                "running": running_state(client, session_id),
-                "guidance": "Check the Web UI for a pending approval/question or a still-running model call.",
+                "running": last_running,
+                "waitReason": "client-deadline-reached",
+                "guidance": (
+                    "The client wait deadline ended without cancelling the Harness task. "
+                    "Continue with wait using the same sessionId and rpcId, and inspect status or the Web UI only if progress appears stalled."
+                ),
             }
         time.sleep(POLL_INTERVAL)
 
@@ -651,7 +712,8 @@ def send_prompt(
     session_id: str,
     text: str,
     wait: bool,
-    timeout: float,
+    timeout: float | None,
+    allow_baseline_fallback: bool = False,
 ) -> dict[str, Any]:
     baseline = max_event_seq(client.history(session_id))
     rpc_id, value = client.rpc(
@@ -665,8 +727,20 @@ def send_prompt(
     if not isinstance(value, dict) or value.get("accepted") is not True:
         raise HarnessError("session.prompt was not accepted")
     if not wait:
-        return {"status": "accepted", "sessionId": session_id, "rpcId": rpc_id}
-    return wait_for_prompt(client, session_id, rpc_id, timeout, baseline)
+        return {
+            "status": "accepted",
+            "sessionId": session_id,
+            "rpcId": rpc_id,
+            "baselineSeq": baseline,
+        }
+    return wait_for_prompt(
+        client,
+        session_id,
+        rpc_id,
+        timeout,
+        baseline,
+        allow_baseline_fallback,
+    )
 
 
 def session_directory(client: HarnessClient, session_id: str) -> str:
@@ -685,7 +759,39 @@ def send_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, Any]
     cwd = session_directory(client, args.session_id)
     with delegate_directory_lock(cwd):
         reject_running_sessions_for_cwd(client, cwd, args.session_id)
-        return send_prompt(client, args.session_id, task, True, args.timeout)
+        was_running = running_state(client, args.session_id)
+        current = (
+            read_status_file(cwd)
+            if read_control_file(cwd, "STATUS.json") is not None
+            else None
+        )
+        outcome = send_prompt(
+            client,
+            args.session_id,
+            task,
+            not getattr(args, "no_wait", False),
+            args.timeout,
+        )
+        if (
+            current is None
+            or was_running is True
+            or current.get("sessionId") != args.session_id
+            or current.get("status") not in {"error", "failed", "pending", "stalled"}
+        ):
+            return outcome
+        status_payload = record_delegate_outcome(
+            cwd,
+            outcome,
+            model=current.get("model"),
+            preset=current.get("preset"),
+            scope=current.get("scope"),
+            previous_run_archive=current.get("previousRunArchive"),
+        )
+        return {
+            **outcome,
+            "delegateStatus": status_payload["status"],
+            "files": delegate_files(cwd, current.get("previousRunArchive")),
+        }
 
 
 def run_task(
@@ -703,6 +809,7 @@ def run_task(
             task,
             not args.no_wait,
             args.timeout,
+            True,
         )
     return created, outcome
 
@@ -725,12 +832,82 @@ def write_status_file(
     return payload
 
 
+def read_status_file(cwd: str) -> dict[str, Any]:
+    raw = read_control_file(cwd, "STATUS.json")
+    if raw is None:
+        raise HarnessError(f"STATUS.json not found in {cwd}")
+    try:
+        status = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HarnessError(f"invalid STATUS.json in {cwd}") from exc
+    if not isinstance(status, dict):
+        raise HarnessError(f"STATUS.json must contain an object: {cwd}")
+    return status
+
+
+def delegate_files(cwd: str, previous_run_archive: Any) -> dict[str, Any]:
+    return {
+        "task": str(Path(cwd) / "TASK.md"),
+        "scope": str(Path(cwd) / "SCOPE.md"),
+        "result": str(Path(cwd) / "RESULT.md"),
+        "status": str(Path(cwd) / "STATUS.json"),
+        "previousRunArchive": previous_run_archive,
+    }
+
+
+def record_delegate_outcome(
+    cwd: str,
+    outcome: dict[str, Any],
+    *,
+    model: Any,
+    preset: Any,
+    scope: Any,
+    previous_run_archive: Any,
+) -> dict[str, Any]:
+    outcome_status = outcome.get("status")
+    if outcome_status in ("completed", "ended"):
+        result_text = str(outcome.get("text", ""))
+        if read_control_file(cwd, "RESULT.md") is None:
+            atomic_write_text(cwd, "RESULT.md", result_text.rstrip() + ("\n" if result_text else ""))
+    completion_reason = outcome.get("completionReason")
+    if outcome_status == "completed":
+        status = "done"
+        reason = "completed"
+    elif outcome_status == "accepted":
+        status = "running"
+        reason = "prompt-accepted"
+    elif outcome_status == "pending":
+        status = "running" if outcome.get("running") else "pending"
+        reason = str(outcome.get("waitReason") or "waiting")
+    elif outcome_status == "stalled":
+        status = "stalled"
+        reason = str(outcome.get("waitReason") or "stalled")
+    else:
+        status = "failed"
+        reason = str(completion_reason or outcome_status or "unknown")
+    return write_status_file(
+        cwd,
+        status,
+        str(outcome.get("sessionId")) if outcome.get("sessionId") else None,
+        reason,
+        model=model,
+        preset=preset,
+        scope=scope,
+        rpcId=outcome.get("rpcId"),
+        baselineSeq=outcome.get("baselineSeq"),
+        completionReason=completion_reason,
+        previousRunArchive=previous_run_archive,
+    )
+
+
 def _delegate_task_locked(
     client: HarnessClient,
     args: argparse.Namespace,
     cwd: str,
 ) -> dict[str, Any]:
     task = read_task(args)
+    if args.preset == "minimal":
+        raise HarnessError("refusing unsafe minimal preset")
     task_type, decision = classify_scope(args.scope, cwd, task)
     reject_running_sessions_for_cwd(client, cwd)
     previous_run_archive = archive_previous_run(cwd)
@@ -754,30 +931,22 @@ def _delegate_task_locked(
             "先读取当前工作目录中的 SCOPE.md 和 TASK.md，再严格按其中范围执行任务。"
             "需要范围外路径时停止并写 ASK.md；完成后写 RESULT.md，可选写 OPINION.md。"
         )
-        outcome = send_prompt(client, session_id, prompt, True, args.timeout)
-        result_text = str(outcome.get("text", ""))
-        if read_control_file(cwd, "RESULT.md") is None:
-            atomic_write_text(cwd, "RESULT.md", result_text.rstrip() + ("\n" if result_text else ""))
-        completion_reason = outcome.get("completionReason")
-        if outcome.get("status") == "completed":
-            status = "done"
-            reason = "completed"
-        elif outcome.get("status") == "timeout":
-            status = "timeout"
-            reason = "running" if outcome.get("running") else "idle-without-turn-end"
-        else:
-            status = "failed"
-            reason = str(completion_reason or outcome.get("status") or "unknown")
-        status_payload = write_status_file(
-            cwd,
-            status,
+        should_wait = getattr(args, "wait", False) or args.timeout is not None
+        outcome = send_prompt(
+            client,
             session_id,
-            reason,
+            prompt,
+            should_wait,
+            args.timeout,
+            True,
+        )
+        status_payload = record_delegate_outcome(
+            cwd,
+            outcome,
             model=created["model"],
             preset=created["preset"],
             scope=task_type,
-            rpcId=outcome.get("rpcId"),
-            previousRunArchive=previous_run_archive,
+            previous_run_archive=previous_run_archive,
         )
         return {
             **created,
@@ -785,13 +954,7 @@ def _delegate_task_locked(
             "scope": task_type,
             "scopeDecision": decision,
             "delegateStatus": status_payload["status"],
-            "files": {
-                "task": str(Path(cwd) / "TASK.md"),
-                "scope": str(Path(cwd) / "SCOPE.md"),
-                "result": str(Path(cwd) / "RESULT.md"),
-                "status": str(Path(cwd) / "STATUS.json"),
-                "previousRunArchive": previous_run_archive,
-            },
+            "files": delegate_files(cwd, previous_run_archive),
         }
     except (HarnessError, OSError) as exc:
         write_status_file(
@@ -811,6 +974,47 @@ def delegate_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, 
         return _delegate_task_locked(client, args, cwd)
 
 
+def collect_delegate(client: HarnessClient, args: argparse.Namespace) -> dict[str, Any]:
+    cwd = require_directory(args.cwd)
+    with delegate_directory_lock(cwd):
+        current = read_status_file(cwd)
+        session_id = current.get("sessionId")
+        rpc_id = current.get("rpcId")
+        if not isinstance(session_id, str) or not isinstance(rpc_id, str):
+            raise HarnessError("STATUS.json does not contain a collectable sessionId and rpcId")
+        if current.get("status") == "done" and current.get("completionReason") == "completed":
+            return {
+                "status": "completed",
+                "sessionId": session_id,
+                "rpcId": rpc_id,
+                "completionReason": "completed",
+                "delegateStatus": "done",
+                "files": delegate_files(cwd, current.get("previousRunArchive")),
+            }
+        baseline = current.get("baselineSeq")
+        outcome = wait_for_prompt(
+            client,
+            session_id,
+            rpc_id,
+            args.timeout,
+            baseline if isinstance(baseline, int) else None,
+            True,
+        )
+        status_payload = record_delegate_outcome(
+            cwd,
+            outcome,
+            model=current.get("model"),
+            preset=current.get("preset"),
+            scope=current.get("scope"),
+            previous_run_archive=current.get("previousRunArchive"),
+        )
+        return {
+            **outcome,
+            "delegateStatus": status_payload["status"],
+            "files": delegate_files(cwd, current.get("previousRunArchive")),
+        }
+
+
 def read_back(directory: str) -> dict[str, Any]:
     cwd = require_directory(directory)
     return {
@@ -825,15 +1029,7 @@ def read_back(directory: str) -> dict[str, Any]:
 
 def directory_status(client: HarnessClient, directory: str) -> dict[str, Any]:
     cwd = require_directory(directory)
-    raw = read_control_file(cwd, "STATUS.json")
-    if raw is None:
-        raise HarnessError(f"STATUS.json not found in {cwd}")
-    try:
-        status = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise HarnessError(f"invalid STATUS.json in {cwd}") from exc
-    if not isinstance(status, dict):
-        raise HarnessError(f"STATUS.json must contain an object: {cwd}")
+    status = read_status_file(cwd)
     session_id = status.get("sessionId")
     running = running_state(client, session_id) if isinstance(session_id, str) else None
     return {"cwd": cwd, "status": status, "running": running}
@@ -969,6 +1165,23 @@ def stop_server(client: HarnessClient) -> dict[str, Any]:
     command = process_command(pid)
     if "dsh" not in command or "web" not in command:
         raise HarnessError("owned PID no longer looks like dsh web; refusing to signal it")
+    try:
+        client.probe_root()
+    except HarnessError:
+        # An owned but unresponsive process has no queryable session state and
+        # may still need to be stopped for recovery.
+        pass
+    else:
+        running_ids = [
+            item.get("sessionId") if isinstance(item.get("sessionId"), str) else "unknown"
+            for item in client.sessions()
+            if item.get("running") is True
+        ]
+        if running_ids:
+            raise HarnessError(
+                "refusing to stop dsh web while Harness sessions are still running: "
+                + ", ".join(running_ids)
+            )
     os.kill(pid, signal.SIGINT)
     deadline = time.monotonic() + 10.0
     while pid_alive(pid) and time.monotonic() < deadline:
@@ -1005,6 +1218,19 @@ def add_create_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--title", help="Optional session title")
 
 
+def add_wait_timeout_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        metavar="SECONDS",
+        help=(
+            "Optional client-side wait deadline; omit to wait until the matching "
+            "turn/end. Reaching the deadline does not cancel the Harness task."
+        ),
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument(
@@ -1023,24 +1249,46 @@ def parser() -> argparse.ArgumentParser:
     send = commands.add_parser("send", help="Send a prompt to an existing session")
     send.add_argument("session_id")
     add_text_arguments(send)
-    send.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    add_wait_timeout_argument(send)
+    send.add_argument("--no-wait", action="store_true", help="Return after the prompt is accepted")
 
     run = commands.add_parser("run", help="Create a session, send a prompt, and wait")
     add_create_arguments(run)
     add_text_arguments(run)
-    run.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    add_wait_timeout_argument(run)
     run.add_argument("--no-wait", action="store_true")
 
-    delegate = commands.add_parser("delegate", help="Create a scoped file-channel task and wait")
+    delegate = commands.add_parser(
+        "delegate",
+        help="Submit a scoped file-channel task and return after acceptance",
+    )
     add_create_arguments(delegate)
     add_text_arguments(delegate)
-    delegate.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    add_wait_timeout_argument(delegate)
     delegate.add_argument("--scope", choices=SCOPES, default="auto")
+    delegate.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait for completion instead of returning after acceptance",
+    )
+
+    collect = commands.add_parser(
+        "collect",
+        help="Collect and finalize the current directory's delegated task",
+    )
+    collect.add_argument("--cwd", required=True)
+    add_wait_timeout_argument(collect)
 
     wait = commands.add_parser("wait", help="Wait for one accepted prompt")
     wait.add_argument("session_id")
     wait.add_argument("--rpc-id", required=True)
-    wait.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    wait.add_argument("--baseline-seq", type=int)
+    wait.add_argument(
+        "--baseline-fallback",
+        action="store_true",
+        help="Allow first-turn-after-baseline recovery only when no earlier turn can finish after that baseline",
+    )
+    add_wait_timeout_argument(wait)
 
     result = commands.add_parser("result", help="Read the last completed turn")
     result.add_argument("session_id")
@@ -1067,7 +1315,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
-    if hasattr(args, "timeout") and args.timeout <= 0:
+    if getattr(args, "timeout", None) is not None and args.timeout <= 0:
         raise HarnessError("timeout must be positive")
     client = HarnessClient(args.base_url)
 
@@ -1082,25 +1330,43 @@ def main() -> int:
     elif args.command == "send":
         outcome = send_task(client, args)
         emit(outcome)
-        if outcome.get("status") not in ("accepted", "completed"):
+        if outcome.get("status") not in ("accepted", "completed", "pending"):
             return 2
     elif args.command == "run":
         created, outcome = run_task(client, args)
         if args.no_wait:
-            emit({"sessionId": outcome["sessionId"], "rpcId": outcome["rpcId"]})
+            emit(
+                {
+                    "sessionId": outcome["sessionId"],
+                    "rpcId": outcome["rpcId"],
+                    "baselineSeq": outcome.get("baselineSeq"),
+                }
+            )
         else:
             emit({**created, **outcome})
-        if outcome.get("status") not in ("accepted", "completed"):
+        if outcome.get("status") not in ("accepted", "completed", "pending"):
             return 2
     elif args.command == "delegate":
         outcome = delegate_task(client, args)
         emit(outcome)
-        if outcome.get("delegateStatus") != "done":
+        if outcome.get("delegateStatus") not in ("done", "running", "pending"):
+            return 2
+    elif args.command == "collect":
+        outcome = collect_delegate(client, args)
+        emit(outcome)
+        if outcome.get("delegateStatus") not in ("done", "running", "pending"):
             return 2
     elif args.command == "wait":
-        outcome = wait_for_prompt(client, args.session_id, args.rpc_id, args.timeout)
+        outcome = wait_for_prompt(
+            client,
+            args.session_id,
+            args.rpc_id,
+            args.timeout,
+            args.baseline_seq,
+            args.baseline_fallback,
+        )
         emit(outcome)
-        if outcome.get("status") != "completed":
+        if outcome.get("status") not in ("completed", "pending"):
             return 2
     elif args.command == "result":
         outcome = last_completed_turn(client.history(args.session_id))

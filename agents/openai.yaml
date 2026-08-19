@@ -1,4 +1,4 @@
 interface:
   display_name: "DeepSeek Harness Delegator"
-  short_description: "在当前任务中按最小范围委派 DeepSeek，并安全读回结果"
-  default_prompt: "使用 $delegate-to-deepseek-harness，把当前任务中适合 DeepSeek 的独立工作流（如文案、视频前期文字或代码审查）按最小范围委派，并核对结果与状态。"
+  short_description: "Async DeepSeek delegation for parallel Codex work"
+  default_prompt: "Use $delegate-to-deepseek-harness to asynchronously delegate the smallest suitable workstream, continue independent Codex work, and collect the verified result when needed."

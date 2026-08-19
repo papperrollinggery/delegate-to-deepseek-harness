@@ -40,6 +40,7 @@ The non-loopback probe must exit non-zero.
 - Keep the body imperative, concise, and focused on operational knowledge Codex cannot safely infer.
 - Preserve the no-subagent, current-Codex-task delegation loop.
 - Keep `agents/openai.yaml` aligned with the actual Skill and ensure `default_prompt` includes `$delegate-to-deepseek-harness`.
+- Keep `VERSION`, the release tag, update-check behavior, and global installer artifacts aligned.
 
 ### Python client
 
@@ -48,6 +49,7 @@ The non-loopback probe must exit non-zero.
 - Do not weaken redirect, proxy, secret-pattern, symlink, root-directory, same-cwd concurrency, active-session, or `minimal`-preset protections.
 - Add a narrowly scoped regression test for behavior changes.
 - Preserve model-written `RESULT.md`; use assistant text only when the file is absent.
+- Preserve asynchronous submission: a client wait deadline must not cancel the Harness task or turn a still-running delegation into a failed result.
 
 ### Documentation
 

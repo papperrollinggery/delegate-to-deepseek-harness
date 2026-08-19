@@ -2,9 +2,10 @@
 
 # Delegate to DeepSeek Harness
 
-**一个让 Codex 与 DeepSeek Harness 在本机双向协作、按范围委派的 Skill**
+**面向 Codex 的异步 DeepSeek 委派：Harness 跑长任务时，Codex 继续并行工作**
 
 [![CI](https://github.com/papperrollinggery/delegate-to-deepseek-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/papperrollinggery/delegate-to-deepseek-harness/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/papperrollinggery/delegate-to-deepseek-harness)](https://github.com/papperrollinggery/delegate-to-deepseek-harness/releases/latest)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Python 零第三方包依赖](https://img.shields.io/badge/Python_packages-stdlib_only-2EA44F)
 ![仅限本机回环](https://img.shields.io/badge/network-loopback_only-6F42C1)
@@ -13,7 +14,7 @@
 
 </div>
 
-把当前 Codex 任务里一块边界清楚的工作，委派给本机运行的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。这个 Skill 通过 Harness 的回环 Web API 和绑定工作目录的持久文件通道下发任务、等待真实的回合结束、读回结果，并在同一个 Codex 任务里继续协作。
+把当前 Codex 任务里一块边界清楚的工作委派给本机运行的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，提交成功后 Codex 立即继续其它独立工作。这个异步 DeepSeek–Codex 协作 Skill 通过 Harness 回环 Web API 和绑定工作目录的持久文件通道下发任务，可监控数小时运行而不受任意 900 秒上限影响，随后核对真实 `turn/end`、收集结果并继续同一会话。
 
 它适合在复杂项目中单独处理文案、资料归纳、视频前期文字、代码实现、审查和第二意见。它**不会**创建新的 Codex 任务或 Codex subagent，也不会自行生成视频、上传或发布内容。
 
@@ -24,6 +25,8 @@
 | 问题 | 答案 |
 | --- | --- |
 | 它是什么？ | 一个独立 Codex Skill，加上一支只使用 Python 标准库的 DeepSeek Harness 客户端。 |
+| Codex 与 DeepSeek 能否并行？ | 可以。`delegate` 在任务被接受后返回，Codex 继续其它工作，随后用 `collect` 收集。 |
+| 任务可以运行多久？ | 默认没有总等待时限；显式客户端截止也不会取消 Harness 任务。 |
 | 连接到哪里？ | 只接受 `127.0.0.1`、`localhost` 或 `::1` 这三类字面回环地址。 |
 | 当前针对哪个 Harness 版本？ | `@deepseek-ai/dsh 0.1.0-rc.6` 的 Web profile。 |
 | 支持哪些模型？ | `deepseek-official` 下的 `deepseek-v4-pro` 与 `deepseek-v4-flash`。 |
@@ -36,8 +39,11 @@
 调用第二个模型不难；真正困难的是让协作有边界、可观察、可恢复。
 
 - **按范围委派**：每个新会话都绑定明确工作目录和任务范围。
+- **并行执行**：Harness 接受任务后立即返回，让 Codex 推进另一条独立工作流。
+- **长任务友好**：检查真实会话状态并收集结果，不用固定 900 秒限制任务时长。
 - **持久交接**：任务、范围、结果、意见、反问和状态全部写入可回读文件。
-- **核验完成**：等待对应的 `turn/end`，不会把“提示已入队”说成“工作已完成”。
+- **核验完成**：收集并核对对应 `turn/end`，不会把“提示已入队”说成“工作已完成”。
+- **版本感知**：每天最多检查一次已发布版本，安装前必须先询问用户。
 - **双向协作**：读回结果、检查实时状态，并可继续同一个 Harness 会话。
 - **本机控制面**：拒绝非回环端点、跳转、带凭据 URL 和过宽的根目录。
 - **诚实安全模型**：`workspace-write` 只视作写入边界，不冒充读取或网络隔离。
@@ -61,13 +67,14 @@
 flowchart LR
     U["当前 Codex 任务中的用户"] --> C["Codex + SKILL.md"]
     C --> P["scripts/dsh_harness.py"]
+    C --> W["Codex 的独立工作"]
     P <-->|"仅限回环地址的 HTTP RPC"| H["DeepSeek Harness Web profile"]
     P <-->|"绑定 cwd 的文件通道"| F["SCOPE · TASK · RESULT · STATUS"]
     H --> D["DeepSeek V4 Pro / Flash"]
     F --> C
 ```
 
-整个总控循环留在当前 Codex 任务中。`delegate` 会写入范围与任务契约，创建绑定 `--cwd` 的 Harness 会话，等待对应回合完成，保留模型亲自写入的 `RESULT.md`，并记录持久状态。
+整个总控循环留在当前 Codex 任务中。`delegate` 会写入范围与任务契约，创建绑定 `--cwd` 的 Harness 会话，记录已接受的 `sessionId` 与 `rpcId`，然后立即返回。Codex 可继续工作，在自然检查点用 `status` 或短时 `collect --timeout 1` 检查，最后收集已完成回合；客户端等待截止不会取消 Harness 工作。
 
 ## 环境要求
 
@@ -77,7 +84,7 @@ flowchart LR
 - DeepSeek Harness Web profile；本仓库当前针对 `@deepseek-ai/dsh 0.1.0-rc.6`
 - 在 Harness 内部直接配置 DeepSeek provider 凭据；绝不把凭据放入本仓库或委派任务文字
 
-客户端已在 macOS 本机与 Linux CI 配置中测试；Windows 文件锁 fallback 尚未经过真实端到端验证。
+客户端已在 macOS 本机与 Linux CI 配置中测试；Windows 文件锁 fallback 尚未经过真实端到端验证，而且 `start`/`stop` 需要 POSIX 进程与信号能力。
 
 ## 安装
 
@@ -101,22 +108,29 @@ npx @deepseek-ai/dsh@0.1.0-rc.6 web
 
 Skill 的 `start` 命令需要 `dsh` 已安装并存在于 `PATH`。
 
+不传 `--dsh-home` 时，`start` 会在操作系统临时目录中使用一次性 Harness Home，因此不会复用常规 Harness Home 中的 provider 配置或会话。确需复用时应明确传入已知 Harness Home。在 Windows 或其它非 POSIX 平台上，请手动启动 Harness，只使用 RPC 相关命令。
+
 ### 2. 安装 Codex Skill
 
-克隆仓库，只复制运行所需文件：
+克隆仓库并运行已测试的全局安装脚本。它只会把运行所需文件复制到 `${CODEX_HOME:-$HOME/.codex}/skills`：
 
 ```sh
 git clone https://github.com/papperrollinggery/delegate-to-deepseek-harness.git
 cd delegate-to-deepseek-harness
-
-install_dir="${CODEX_HOME:-$HOME/.codex}/skills/delegate-to-deepseek-harness"
-mkdir -p "$install_dir/agents" "$install_dir/scripts"
-rsync -a SKILL.md "$install_dir/SKILL.md"
-rsync -a agents/openai.yaml "$install_dir/agents/openai.yaml"
-rsync -a scripts/dsh_harness.py "$install_dir/scripts/dsh_harness.py"
+bash scripts/install-global.sh
 ```
 
 安装后新建一个 Codex 任务，让 Skill discovery 重新加载。
+
+### 3. 自动检查更新
+
+Skill 被调用时，`scripts/check-update.sh` 每天最多读取一次 GitHub 的最新已发布 release 元数据；已是最新版或离线时保持静默。发现新版本后，Codex 应先询问用户，再运行：
+
+```sh
+bash scripts/update-global.sh
+```
+
+更新器下载对应 GitHub release tag，并复用全局安装脚本。未经用户确认不会运行。设置 `DSH_DISABLE_UPDATE_CHECK=1` 可关闭自动检查。
 
 ## 快速开始
 
@@ -138,7 +152,28 @@ rsync -a scripts/dsh_harness.py "$install_dir/scripts/dsh_harness.py"
 只返回方案，并标记没有来源支撑的宣传口径。
 ```
 
-Codex 应先探测服务，选择最小范围，执行委派，读取 `RESULT.md`，核对 `STATUS.json`，并报告 session ID、preset、工作目录、完成原因与剩余不确定性。
+Codex 应先探测服务，选择最小范围并提交任务；随后推进其它独立工作，收集 `RESULT.md`、核对 `STATUS.json`，并报告 session ID、preset、工作目录、完成原因与剩余不确定性。
+
+## 并行与长任务工作流
+
+`delegate` 默认异步。Harness 接受提示后命令立即返回，因此耗时数小时的任务不会让 Codex 一直卡在命令行：
+
+```sh
+python3 scripts/dsh_harness.py delegate \
+  --cwd /absolute/project/path \
+  --scope proposal-only \
+  --text-file /absolute/project/deepseek-task.txt
+
+# Codex 在这里继续其它独立工作。
+python3 scripts/dsh_harness.py status --cwd /absolute/project/path
+python3 scripts/dsh_harness.py collect --cwd /absolute/project/path --timeout 1
+
+# 当结果成为硬依赖时，不设等待截止并收集最终结果。
+python3 scripts/dsh_harness.py collect --cwd /absolute/project/path
+python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
+```
+
+`--timeout` 只是可选的客户端等待截止，不是 DeepSeek 执行时限。截止后返回 `pending`/`running`，保留相同的 `sessionId` 与 `rpcId`，并且绝不取消 Harness 回合。不设截止时，客户端会在会话持续运行期间一直等待；只有 Harness 在宽限期内持续不再报告运行、同时又没有匹配 `turn/end`，才报告 `stalled`。只有 Codex 已经没有任何可并行工作时，才使用 `delegate --wait`。
 
 ## 如何选择路由
 
@@ -178,7 +213,8 @@ python3 scripts/dsh_harness.py --help
 | --- | --- |
 | `probe` | 检查 Web 与 RPC 是否就绪 |
 | `list` | 输出精简会话清单 |
-| `delegate` | 创建带范围文件通道的任务并等待 |
+| `delegate` | 提交带范围文件通道的任务，并在接受后立即返回 |
+| `collect` | 检查或等待已记录回合，并完成 `RESULT.md` / `STATUS.json` |
 | `read-back` | 读取 `RESULT.md`、`OPINION.md`、`ASK.md` |
 | `status` | 合并持久状态与实时会话状态 |
 | `send` | 继续已有 Harness 会话 |
@@ -186,10 +222,12 @@ python3 scripts/dsh_harness.py --help
 | `result` | 读取最后一个已完成回合 |
 | `create` / `run` | 更底层的会话与提示流程 |
 | `cancel` | 仅在用户要求或确需停止时取消活跃回合 |
-| `start` / `stop` | 启动回环服务，或只停止由本客户端启动的服务 |
+| `start` / `stop` | 启动回环服务；只停止由本客户端启动且当前没有运行中会话的服务 |
 | `open-ui` | 打开已经运行的本机 Web UI |
 
 对于较长或涉及 shell 特殊字符的任务，优先使用 `--text-file`，不要塞进很长的 `--text`。
+
+底层 `wait --baseline-seq N --baseline-fallback` 恢复模式只适用于全新会话，且基线 `N` 之后不可能先结束其它回合（例如 `run --no-wait` 创建的会话）。不要把它用于排在一个运行中回合后面的提示。常规 `delegate`/`collect` 会自动处理这一区别。
 
 ## 文件通道契约
 
@@ -200,7 +238,7 @@ python3 scripts/dsh_harness.py --help
 | `RESULT.md` | 主结果；如果模型亲自写入则原样保留 |
 | `OPINION.md` | 可选的复核意见或建议 |
 | `ASK.md` | 扩权请求或阻塞问题；绝不自动批准 |
-| `STATUS.json` | 持久记录会话 ID、模型、preset、scope、RPC ID、状态、原因与更新时间 |
+| `STATUS.json` | 持久记录会话 ID、RPC ID、提示前基线序号、模型、preset、scope、状态、原因与更新时间 |
 
 `delegate`、`run` 与 `send` 三条提示路径共用工作区外的目录专属进程锁。当 `delegate` 再次使用同一工作目录时，只要 Harness 中仍有使用同一 `cwd` 的运行中会话，就拒绝继续；随后才把上一轮控制文件移入 `.dsh-delegation-history/<run-id>/`。这样既保留旧文件，也不会把已经存在的旧 `RESULT.md`、`OPINION.md` 或 `ASK.md` 误读为本轮结果。历史目录仍属于敏感任务资料，应排除在版本控制之外。
 
@@ -218,6 +256,7 @@ python3 scripts/dsh_harness.py --help
 - 假定 `workspace-write` 只限制写入，不限制同用户读取或出站网络。
 - 未经明确授权，不委派凭据、私钥、支付、发布、部署或破坏性修改。
 - 不自动回答 Harness 的审批或范围问题。
+- 每日更新检查只对本仓库公开的最新 release 元数据发起一次短时只读请求，不发送任务内容，并可用 `DSH_DISABLE_UPDATE_CHECK=1` 关闭；安装仍需用户确认。
 
 完整规则和漏洞报告方式见[安全政策](SECURITY.md)。
 
@@ -230,6 +269,14 @@ python3 scripts/dsh_harness.py --help
 ### 它会创建新的 Codex 任务或 subagent 吗？
 
 不会。总控循环始终留在当前 Codex 任务中。DeepSeek 工作运行在独立的本机 Harness 会话，而不是 Codex subagent。
+
+### DeepSeek 运行几小时时，Codex 能继续工作吗？
+
+可以。`delegate` 在提示被接受后立即返回。Codex 应继续其它独立工作，在自然检查点使用 `status` 或短时 `collect --timeout 1`；只有结果成为硬依赖时才使用不设截止的 `collect`。默认不存在 900 秒任务上限。
+
+### Skill 会静默自动更新吗？
+
+不会。它每天最多检查一次 GitHub 最新已发布 release，已是最新版或离线时保持静默。发现新版后会先询问用户；只有获得确认，`update-global.sh` 才会下载并安装对应 release。
 
 ### 它能生成或剪辑视频吗？
 
@@ -252,12 +299,16 @@ RC.6 的该 composition 没有提供本工作流预期的文件写入 sandbox。
 运行时表面刻意保持精简：
 
 ```text
-SKILL.md                 Skill 触发与运行契约
-agents/openai.yaml       Codex 展示元数据
-scripts/dsh_harness.py   仅限回环、只用标准库的 RPC 客户端
+VERSION                   已安装与已发布的 Skill 版本
+SKILL.md                  Skill 触发与运行契约
+agents/openai.yaml        Codex 展示元数据
+scripts/dsh_harness.py    仅限回环、只用标准库的 RPC 客户端
+scripts/check-update.sh   每日静默版本检查
+scripts/install-global.sh Codex 全局 Skill 安装器
+scripts/update-global.sh  用户确认后运行的 release 更新器
 ```
 
-按照上面的推荐同步方式安装时，仓库层的文档、测试、CI 与社区文件不会复制进 Skill 运行副本。
+维护好的安装脚本不会把仓库层文档、测试、CI 与社区文件复制进 Skill 运行副本。
 
 执行本地发布门禁：
 

@@ -156,10 +156,10 @@
 ```sh
 python3 scripts/dsh_harness.py send SESSION_ID \
   --text-file /absolute/path/to/follow-up.txt \
-  --timeout 900
+  --no-wait
 ```
 
-当工作目录、授权、任务类型或写入范围发生实质变化时，创建新的委派任务。
+后续结果成为依赖时，用 `wait SESSION_ID --rpc-id RPC_ID` 收集。当工作目录、授权、任务类型或写入范围发生实质变化时，创建新的委派任务。
 
 ## 直接使用 CLI
 
@@ -172,14 +172,22 @@ python3 scripts/dsh_harness.py delegate \
   --model deepseek-v4-pro \
   --scope proposal-only \
   --title "Campaign copy review" \
-  --text-file /absolute/project/briefs/delegate-copy.txt \
-  --timeout 900
-
-python3 scripts/dsh_harness.py read-back \
-  --cwd /absolute/project/workstreams/copy
+  --text-file /absolute/project/briefs/delegate-copy.txt
 
 python3 scripts/dsh_harness.py status \
   --cwd /absolute/project/workstreams/copy
+
+python3 scripts/dsh_harness.py collect \
+  --cwd /absolute/project/workstreams/copy --timeout 1
+
+# Codex 继续其它独立工作。真正需要结果时：
+python3 scripts/dsh_harness.py collect \
+  --cwd /absolute/project/workstreams/copy
+
+python3 scripts/dsh_harness.py read-back \
+  --cwd /absolute/project/workstreams/copy
 ```
+
+`delegate` 默认在任务被接受后立即返回。`--timeout` 只限制客户端收集等待，绝不会取消 Harness 任务；只有结果已经成为硬依赖且没有其它可并行工作时，才省略它。
 
 不要把 API key、密码、私钥、session cookie 或无关客户资料写入任务文件。

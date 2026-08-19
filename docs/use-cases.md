@@ -158,10 +158,10 @@ After a completed delegation, continue the same session when the follow-up depen
 ```sh
 python3 scripts/dsh_harness.py send SESSION_ID \
   --text-file /absolute/path/to/follow-up.txt \
-  --timeout 900
+  --no-wait
 ```
 
-Use a new delegation when the working directory, authorization, task type, or write scope changes materially.
+Use `wait SESSION_ID --rpc-id RPC_ID` later when the follow-up becomes a dependency. Use a new delegation when the working directory, authorization, task type, or write scope changes materially.
 
 ## Direct CLI pattern
 
@@ -174,14 +174,22 @@ python3 scripts/dsh_harness.py delegate \
   --model deepseek-v4-pro \
   --scope proposal-only \
   --title "Campaign copy review" \
-  --text-file /absolute/project/briefs/delegate-copy.txt \
-  --timeout 900
-
-python3 scripts/dsh_harness.py read-back \
-  --cwd /absolute/project/workstreams/copy
+  --text-file /absolute/project/briefs/delegate-copy.txt
 
 python3 scripts/dsh_harness.py status \
   --cwd /absolute/project/workstreams/copy
+
+python3 scripts/dsh_harness.py collect \
+  --cwd /absolute/project/workstreams/copy --timeout 1
+
+# Continue independent Codex work. When the result is required:
+python3 scripts/dsh_harness.py collect \
+  --cwd /absolute/project/workstreams/copy
+
+python3 scripts/dsh_harness.py read-back \
+  --cwd /absolute/project/workstreams/copy
 ```
+
+`delegate` returns after acceptance by default. `--timeout` limits only a client-side collection wait and never cancels the Harness task; omit it only when the result is now a hard dependency and no independent Codex work remains.
 
 Never place API keys, passwords, private keys, session cookies, or unrelated client data in the task file.
