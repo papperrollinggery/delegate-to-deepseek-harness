@@ -13,24 +13,24 @@ At the start of a task, run `bash scripts/check-update.sh`. It reads GitHub's la
 
 - Connect to Harness only through a literal loopback URL. The RPC client rejects non-loopback hosts; the separate update checker may read only this repository's public latest-release metadata from GitHub.
 - Probe before acting. Start the service only when delegation requires it or the user asks to start it.
-- Use `standard` by default. Never use `minimal`; the current RC.6 composition bypasses the file-write sandbox.
+- Use `standard` by default. Never use `minimal`; the current RC.7 composition bypasses the file-write sandbox.
 - Use `code` only for an explicitly coding-focused task. Use `cordis` only when the user explicitly asks to develop or alter Harness compositions.
 - Choose `--cwd` from the actual task scope: a dedicated directory for self-contained work, the project root for cross-file work, and the project root plus `proposal-only` for advice that must not modify project files. Never select a home directory, credential directory, or unrelated client-data tree.
 - Treat `workspace-write` as a write boundary only. It does not protect same-user readable secrets or restrict outbound network access.
 - Treat `proposal-only` as an instructional expected-write guardrail. The actual Harness session write boundary remains the selected `cwd`; do not use `proposal-only` as read isolation or as protection for sensitive project files.
-- Treat `--model` as a deployment-setting mutation. In RC.6, `session.selectModel` selects the new session model and also persists it as the deployment-wide `agent-default-model`; there is no separate pure session-only RPC. `create`, `run`, and `delegate` call it, defaulting to `deepseek-v4-pro`. An explicit `--model deepseek-v4-flash` therefore also changes the default observed by later blank sessions and the Web UI. If preserving the current deployment default is required, do not create a session with these commands; use an existing session with `send` or stop and ask before proceeding.
+- Treat `--model` and `--reasoning-effort` as deployment-setting mutations. In RC.7, `session.selectModel` selects the new session model and optional reasoning effort and also persists the resolved selection as the deployment-wide `agent-default-model`; there is no separate pure session-only RPC. `create`, `run`, and `delegate` call it, defaulting to `deepseek-v4-pro` and the adapter's reasoning effort. An explicit `--model deepseek-v4-flash` or `--reasoning-effort off|low|high|max` therefore also changes the defaults observed by later blank sessions and the Web UI. If preserving the current deployment default is required, do not create a session with these commands; use an existing session with `send` or stop and ask before proceeding.
 - Delegation never expands the user's authorization. Do not ask Harness to publish, deploy, message, pay, delete, expose credentials, or mutate external systems unless the user authorized that action.
 - Do not pass secrets in task text. Never read or write Harness credentials through this Skill.
 - Never auto-answer approval or question prompts. A client wait deadline is not a task failure and never cancels the Harness turn; continue independent work and collect again later. Use the Web UI only when status or events show that human attention is actually needed.
 - Never stop the owned Harness service while any session is still running. `stop` verifies live sessions and fails closed; an unresponsive owned process may still be stopped for recovery because its session state cannot be queried.
-- Report the session id, preset, working directory, completion reason, and any unverified state.
+- Report the session id, preset, model, resolved reasoning effort, working directory, completion reason, and any unverified state.
 
 ## Route the workstream
 
 - For copywriting, research synthesis, transcript structuring, and video-preproduction text, use `standard` with the narrowest dedicated workstream directory. Treat storylines, scripts, shot descriptions, on-screen copy, subtitle cleanup, and generation-prompt review as text work; do not claim this Skill renders, edits, or publishes video.
 - For source-file implementation or repository-wide code review, use `code` and select the smallest project root that contains every required file.
 - For an opinion, audit, or draft that must not alter project files, use `proposal-only`. Prefer this scope for first-pass copy alternatives and video treatment reviews.
-- For fast, low-risk iterations, use `deepseek-v4-flash` only when the shared default-model mutation is acceptable. Keep `deepseek-v4-pro` as the default for nuanced writing, multi-file reasoning, and higher-cost error surfaces.
+- For fast, low-risk iterations, use `deepseek-v4-flash` or an explicit lower reasoning effort only when the shared deployment-default mutation is acceptable. Keep `deepseek-v4-pro` with the adapter default effort for nuanced writing, multi-file reasoning, and higher-cost error surfaces.
 - Use `cordis` only when the user explicitly asks to develop or alter Harness compositions. Reject `minimal` in every workflow.
 
 ## Core workflow
@@ -117,7 +117,7 @@ For long or shell-sensitive prompts, write a scoped temporary text file with the
 - `RESULT.md`: the result read back by Codex. Preserve the model-written file; use final assistant text only as a missing-file fallback.
 - `OPINION.md`: optional review comments or suggestions from DeepSeek.
 - `ASK.md`: a question or request for scope expansion; do not auto-approve it.
-- `STATUS.json`: durable status plus `sessionId`, `rpcId`, pre-prompt `baselineSeq`, completion reason, model, preset, scope, and update time. The baseline lets `collect` recover even when early prompt events roll out of the Harness history window.
+- `STATUS.json`: durable status plus `sessionId`, `rpcId`, pre-prompt `baselineSeq`, completion reason, model, resolved reasoning effort, preset, scope, and update time. The baseline lets `collect` recover even when early prompt events roll out of the Harness history window.
 - `.dsh-delegation-history/<run-id>/`: recoverable archive of the previous run's control files when `delegate` reuses a working directory. Keep it out of version control and treat it as sensitive task data, not as tamper-evident storage.
 
 Do not prompt another Harness session for the selected `cwd` while a task is running. The per-directory lock coordinates this CLI's `delegate`, `run`, and `send` paths, not independent UI or third-party Harness clients.

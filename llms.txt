@@ -7,13 +7,13 @@ Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-
 ## Core facts
 
 - Project type: standalone Codex Skill plus a Python 3.10+ standard-library CLI.
-- Current release line: v0.2.x; the machine-readable installed version is in VERSION.
+- Current release line: v0.3.x; the machine-readable installed version is in VERSION.
 - Primary use cases: copywriting, research synthesis, video-preproduction text, coding, review, and independent opinions inside larger projects.
 - Parallel behavior: delegate returns after prompt acceptance by default; Codex should continue independent work and use collect at natural checkpoints.
 - Long-running behavior: there is no default wall-clock wait limit; an explicit timeout limits only the client wait and never cancels the Harness turn.
 - Update behavior: check-update.sh reads GitHub's latest published release metadata at most once per day, stays silent when current or offline, and asks for user approval before update-global.sh installs that release.
 - Non-goals: Codex subagent creation, new Codex task creation, video rendering, media editing, upload, publication, or automatic external actions.
-- Harness dependency: official DeepSeek Harness Web profile; compatibility target is @deepseek-ai/dsh 0.1.0-rc.6.
+- Harness dependency: official DeepSeek Harness Web profile; compatibility target is @deepseek-ai/dsh 0.1.0-rc.7.
 - Supported models: deepseek-v4-pro and deepseek-v4-flash through deepseek-official.
 - Harness endpoint boundary: literal loopback hosts only: 127.0.0.1, localhost, or ::1. The separate update checker may read this repository's public latest-release metadata from GitHub.
 - Runtime Python dependencies: none outside the standard library.
@@ -47,7 +47,7 @@ Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-
 - RESULT.md: primary result; preserve model-written content.
 - OPINION.md: optional review or suggestion channel.
 - ASK.md: blocking question or scope-expansion request; never auto-approve.
-- STATUS.json: durable session, RPC, pre-prompt baseline sequence, model, preset, scope, completion, and status data; the baseline supports collection after early history events roll out.
+- STATUS.json: durable session, RPC, pre-prompt baseline sequence, model, resolved reasoning effort, preset, scope, completion, and status data; the baseline supports collection after early history events roll out.
 - .dsh-delegation-history/<run-id>/: recoverable archive of the previous run's control files when a cwd is reused; sensitive local task data, not an isolation boundary.
 - REPLY.md: reserved future channel; not implemented.
 
@@ -59,7 +59,7 @@ Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-
 - delegate, run, and send prompting paths are serialized per cwd by this CLI, and unsafe overlap with other running same-directory sessions is rejected; independent UI or third-party clients are outside that lock.
 - collect uses the durable sessionId and rpcId in STATUS.json to finalize an asynchronous delegation without creating a second session.
 - stop refuses to terminate a healthy owned Harness service while any session is still running; recovery of an owned but unresponsive process remains possible.
-- create, run, and delegate select a model and also persist the RC.6 deployment-wide default.
+- create, run, and delegate select a model and optional reasoning effort and also persist the RC.7 deployment-wide default selection.
 - The minimal preset is deliberately rejected.
 
 ## Upstream references

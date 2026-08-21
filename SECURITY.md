@@ -26,7 +26,7 @@ Changes must preserve these boundaries:
 4. **Narrow working directory.** Reject filesystem roots and the user-home root; choose the smallest directory that contains the task.
 5. **No secret delegation.** Reject obvious secret patterns and never read, write, print, or publish Harness credentials through this Skill.
 6. **No symlinked control files.** Refuse collaboration files that can escape their resolved working directory.
-7. **No `minimal` preset.** RC.6 does not provide the file-write sandbox expected by this workflow.
+7. **No `minimal` preset.** RC.7 does not provide the file-write sandbox expected by this workflow.
 8. **No implicit external action.** Delegation does not authorize publish, deploy, message, pay, delete, or mutate remote systems.
 9. **No automatic approval.** Never auto-answer a Harness approval, question, or request for scope expansion.
 10. **No pre-existing session mutation in tests.** End-to-end tests may create sessions but must not prompt, cancel, rename, or otherwise mutate existing ones.
@@ -39,7 +39,7 @@ Changes must preserve these boundaries:
 - The optional daily update check contacts `api.github.com` with a short read-only request; an approved update then downloads the matching tag archive from `github.com`. Disable checks with `DSH_DISABLE_UPDATE_CHECK=1` when no non-loopback traffic is desired.
 - `workspace-write` limits writes; it does not restrict same-user reads or outbound network access.
 - `proposal-only` narrows expected writes to collaboration control files; it is not read isolation.
-- In the targeted RC.6 behavior, `session.selectModel` also persists the Harness deployment-wide default model.
+- In the targeted RC.7 behavior, `session.selectModel` also persists the Harness deployment-wide default model and resolved reasoning effort.
 - Secret-pattern detection is a guardrail, not a complete data-loss-prevention system.
 - `.dsh-delegation-history` preserves previous control files inside the selected working directory. It prevents reuse of already-existing stale output, but it is not tamper-evident or isolated from the same-user Harness process; keep it out of version control and treat it as sensitive task data.
 - The per-directory lock coordinates this CLI's `delegate`, `run`, and `send` commands only. It cannot stop a different Harness UI or third-party client from prompting an idle same-directory session after the preflight check. Do not interact with another session for the selected `cwd` while a prompting command is running.

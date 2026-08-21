@@ -229,6 +229,86 @@ class WaitBehaviorTests(unittest.TestCase):
         self.assertEqual(outcome["text"], "sync result")
 
 
+class ModelSelectionTests(unittest.TestCase):
+    def test_select_model_omits_reasoning_effort_by_default(self) -> None:
+        client = dsh_harness.HarnessClient("http://127.0.0.1:3080")
+        response = {
+            "selected": {
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-pro",
+                "reasoningEffort": "high",
+            }
+        }
+
+        with mock.patch.object(
+            client, "rpc", return_value=("rpc-1", response)
+        ) as rpc:
+            selected = client.select_model("session-1", "deepseek-v4-pro")
+
+        self.assertEqual(selected["reasoningEffort"], "high")
+        rpc.assert_called_once_with(
+            "session.selectModel",
+            {
+                "sessionId": "session-1",
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-pro",
+            },
+        )
+
+    def test_select_model_rejects_a_different_reasoning_effort(self) -> None:
+        client = dsh_harness.HarnessClient("http://127.0.0.1:3080")
+        response = {
+            "selected": {
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-pro",
+                "reasoningEffort": "high",
+            }
+        }
+
+        with (
+            mock.patch.object(client, "rpc", return_value=("rpc-1", response)) as rpc,
+            self.assertRaisesRegex(dsh_harness.HarnessError, "reasoning effort"),
+        ):
+            client.select_model("session-1", "deepseek-v4-pro", "low")
+
+        rpc.assert_called_once_with(
+            "session.selectModel",
+            {
+                "sessionId": "session-1",
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-pro",
+                "reasoningEffort": "low",
+            },
+        )
+
+    def test_create_session_passes_and_reports_reasoning_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args = argparse.Namespace(
+                cwd=directory,
+                preset="standard",
+                model="deepseek-v4-pro",
+                reasoning_effort="low",
+                title=None,
+            )
+            client = mock.Mock()
+            client.rpc.return_value = (
+                "create-rpc",
+                {"sessionId": "session-1", "agentPreset": "standard"},
+            )
+            client.select_model.return_value = {
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-pro",
+                "reasoningEffort": "low",
+            }
+
+            created = dsh_harness.create_session(client, args)
+
+        self.assertEqual(created.get("reasoningEffort"), "low")
+        client.select_model.assert_called_once_with(
+            "session-1", "deepseek-v4-pro", "low"
+        )
+
+
 class ServiceLifecycleTests(unittest.TestCase):
     def test_stop_refuses_while_any_harness_session_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -588,6 +668,7 @@ class DelegateTaskTests(unittest.TestCase):
                 "active-session",
                 "prompt-accepted",
                 model="deepseek-v4-pro",
+                reasoningEffort="high",
                 preset="standard",
                 scope="proposal-only",
                 rpcId="active-rpc",
@@ -624,6 +705,7 @@ class DelegateTaskTests(unittest.TestCase):
             current = dsh_harness.read_status_file(directory)
             self.assertEqual(current["rpcId"], "active-rpc")
             self.assertEqual(current["baselineSeq"], 3)
+            self.assertEqual(current.get("reasoningEffort"), "high")
 
     def test_running_session_blocks_reuse_before_archiving(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -765,6 +847,7 @@ class DelegateTaskTests(unittest.TestCase):
                 "preset": "standard",
                 "model": "deepseek-v4-pro",
                 "provider": "deepseek-official",
+                "reasoningEffort": "high",
                 "cwd": directory,
                 "title": "Async test",
             }
@@ -790,6 +873,7 @@ class DelegateTaskTests(unittest.TestCase):
             self.assertEqual(status["rpcId"], "async-rpc")
             self.assertEqual(status["baselineSeq"], 12)
             self.assertEqual(status["reason"], "prompt-accepted")
+            self.assertEqual(status.get("reasoningEffort"), "high")
 
     def test_collect_finalizes_async_delegate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -799,6 +883,7 @@ class DelegateTaskTests(unittest.TestCase):
                 "collect-session",
                 "prompt-accepted",
                 model="deepseek-v4-pro",
+                reasoningEffort="high",
                 preset="standard",
                 scope="proposal-only",
                 rpcId="collect-rpc",
@@ -830,6 +915,7 @@ class DelegateTaskTests(unittest.TestCase):
             self.assertEqual(status["status"], "done")
             self.assertEqual(status["baselineSeq"], 7)
             self.assertEqual(status["completionReason"], "completed")
+            self.assertEqual(status.get("reasoningEffort"), "high")
 
 
 class TaskInputTests(unittest.TestCase):
@@ -867,6 +953,23 @@ class CliTests(unittest.TestCase):
         )
         self.assertFalse(args.wait)
         self.assertIsNone(args.timeout)
+
+    def test_create_commands_accept_optional_reasoning_effort(self) -> None:
+        default_args = dsh_harness.parser().parse_args(
+            ["create", "--cwd", "/tmp/example"]
+        )
+        self.assertIsNone(getattr(default_args, "reasoning_effort", "missing"))
+
+        selected_args = dsh_harness.parser().parse_args(
+            [
+                "create",
+                "--cwd",
+                "/tmp/example",
+                "--reasoning-effort",
+                "low",
+            ]
+        )
+        self.assertEqual(selected_args.reasoning_effort, "low")
 
     def test_wait_can_explicitly_enable_safe_baseline_fallback(self) -> None:
         args = dsh_harness.parser().parse_args(

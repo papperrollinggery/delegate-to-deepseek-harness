@@ -46,6 +46,7 @@ INACTIVE_GRACE = 60.0
 START_TIMEOUT = 20.0
 ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 MODELS = ("deepseek-v4-pro", "deepseek-v4-flash")
+REASONING_EFFORTS = ("off", "low", "high", "max")
 SCOPES = ("auto", "single-dir", "cross-file", "proposal-only")
 PROJECT_ROOT_MARKERS = (
     ".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod",
@@ -193,20 +194,35 @@ class HarnessClient:
                 events.append(entry["event"])
         return events
 
-    def select_model(self, session_id: str, model: str) -> dict[str, Any]:
+    def select_model(
+        self,
+        session_id: str,
+        model: str,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "sessionId": session_id,
+            "provider": "deepseek-official",
+            "model": model,
+        }
+        if reasoning_effort is not None:
+            payload["reasoningEffort"] = reasoning_effort
         _, value = self.rpc(
             "session.selectModel",
-            {
-                "sessionId": session_id,
-                "provider": "deepseek-official",
-                "model": model,
-            },
+            payload,
         )
         if not isinstance(value, dict) or not isinstance(value.get("selected"), dict):
             raise HarnessError("session.selectModel returned an invalid value")
         selected = value["selected"]
         if selected.get("provider") != "deepseek-official" or selected.get("model") != model:
             raise HarnessError("session.selectModel returned an unexpected selection")
+        if (
+            reasoning_effort is not None
+            and selected.get("reasoningEffort") != reasoning_effort
+        ):
+            raise HarnessError(
+                "session.selectModel returned an unexpected reasoning effort"
+            )
         return selected
 
 
@@ -694,7 +710,11 @@ def create_session(client: HarnessClient, args: argparse.Namespace) -> dict[str,
         raise HarnessError("session.create returned an invalid value")
     session_id = value["sessionId"]
     model = getattr(args, "model", MODELS[0])
-    selected = client.select_model(session_id, model)
+    selected = client.select_model(
+        session_id,
+        model,
+        getattr(args, "reasoning_effort", None),
+    )
     if getattr(args, "title", None):
         client.rpc("session.rename", {"sessionId": session_id, "title": args.title})
     return {
@@ -702,6 +722,7 @@ def create_session(client: HarnessClient, args: argparse.Namespace) -> dict[str,
         "preset": value.get("agentPreset", args.preset),
         "model": selected.get("model", model),
         "provider": selected.get("provider", "deepseek-official"),
+        "reasoningEffort": selected.get("reasoningEffort"),
         "cwd": cwd,
         "title": getattr(args, "title", None),
     }
@@ -783,6 +804,7 @@ def send_task(client: HarnessClient, args: argparse.Namespace) -> dict[str, Any]
             cwd,
             outcome,
             model=current.get("model"),
+            reasoning_effort=current.get("reasoningEffort"),
             preset=current.get("preset"),
             scope=current.get("scope"),
             previous_run_archive=current.get("previousRunArchive"),
@@ -860,6 +882,7 @@ def record_delegate_outcome(
     outcome: dict[str, Any],
     *,
     model: Any,
+    reasoning_effort: Any,
     preset: Any,
     scope: Any,
     previous_run_archive: Any,
@@ -891,6 +914,7 @@ def record_delegate_outcome(
         str(outcome.get("sessionId")) if outcome.get("sessionId") else None,
         reason,
         model=model,
+        reasoningEffort=reasoning_effort,
         preset=preset,
         scope=scope,
         rpcId=outcome.get("rpcId"),
@@ -923,6 +947,7 @@ def _delegate_task_locked(
             session_id,
             "prompt-pending",
             model=created["model"],
+            reasoningEffort=created.get("reasoningEffort"),
             preset=created["preset"],
             scope=task_type,
             previousRunArchive=previous_run_archive,
@@ -944,6 +969,7 @@ def _delegate_task_locked(
             cwd,
             outcome,
             model=created["model"],
+            reasoning_effort=created.get("reasoningEffort"),
             preset=created["preset"],
             scope=task_type,
             previous_run_archive=previous_run_archive,
@@ -1004,6 +1030,7 @@ def collect_delegate(client: HarnessClient, args: argparse.Namespace) -> dict[st
             cwd,
             outcome,
             model=current.get("model"),
+            reasoning_effort=current.get("reasoningEffort"),
             preset=current.get("preset"),
             scope=current.get("scope"),
             previous_run_archive=current.get("previousRunArchive"),
@@ -1211,8 +1238,16 @@ def add_create_arguments(parser: argparse.ArgumentParser) -> None:
         choices=MODELS,
         default=MODELS[0],
         help=(
-            "Model for the new session (default: deepseek-v4-pro); RC.6 also "
+            "Model for the new session (default: deepseek-v4-pro); RC.7 also "
             "persists this as the deployment-wide default"
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=REASONING_EFFORTS,
+        help=(
+            "Optional DeepSeek reasoning effort; omit to use the adapter default. "
+            "RC.7 persists the resolved effort with the deployment-wide model default."
         ),
     )
     parser.add_argument("--title", help="Optional session title")

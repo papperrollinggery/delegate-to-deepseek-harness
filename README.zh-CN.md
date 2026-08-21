@@ -28,7 +28,7 @@
 | Codex 与 DeepSeek 能否并行？ | 可以。`delegate` 在任务被接受后返回，Codex 继续其它工作，随后用 `collect` 收集。 |
 | 任务可以运行多久？ | 默认没有总等待时限；显式客户端截止也不会取消 Harness 任务。 |
 | 连接到哪里？ | 只接受 `127.0.0.1`、`localhost` 或 `::1` 这三类字面回环地址。 |
-| 当前针对哪个 Harness 版本？ | `@deepseek-ai/dsh 0.1.0-rc.6` 的 Web profile。 |
+| 当前针对哪个 Harness 版本？ | `@deepseek-ai/dsh 0.1.0-rc.7` 的 Web profile。 |
 | 支持哪些模型？ | `deepseek-official` 下的 `deepseek-v4-pro` 与 `deepseek-v4-flash`。 |
 | 如何交换结果？ | 通过 `SCOPE.md`、`TASK.md`、`RESULT.md`、`OPINION.md`、`ASK.md`、`STATUS.json`。 |
 | 需要安装 Python 依赖吗？ | 不需要；`scripts/dsh_harness.py` 只用 Python 3 标准库。 |
@@ -45,6 +45,7 @@
 - **核验完成**：收集并核对对应 `turn/end`，不会把“提示已入队”说成“工作已完成”。
 - **版本感知**：每天最多检查一次已发布版本，安装前必须先询问用户。
 - **双向协作**：读回结果、检查实时状态，并可继续同一个 Harness 会话。
+- **推理强度控制**：可选 `off`、`low`、`high` 或 `max`，并把解析后的值写入持久状态。
 - **本机控制面**：拒绝非回环端点、跳转、带凭据 URL 和过宽的根目录。
 - **诚实安全模型**：`workspace-write` 只视作写入边界，不冒充读取或网络隔离。
 
@@ -81,7 +82,7 @@ flowchart LR
 - 支持[自定义 Skill](https://developers.openai.com/codex/skills) 的 Codex
 - Python 3.10 或更高版本
 - 当前 DeepSeek Harness 版本所支持的 Node.js
-- DeepSeek Harness Web profile；本仓库当前针对 `@deepseek-ai/dsh 0.1.0-rc.6`
+- DeepSeek Harness Web profile；本仓库当前针对 `@deepseek-ai/dsh 0.1.0-rc.7`
 - 在 Harness 内部直接配置 DeepSeek provider 凭据；绝不把凭据放入本仓库或委派任务文字
 
 客户端已在 macOS 本机与 Linux CI 配置中测试；Windows 文件锁 fallback 尚未经过真实端到端验证，而且 `start`/`stop` 需要 POSIX 进程与信号能力。
@@ -93,7 +94,7 @@ flowchart LR
 安装当前兼容性目标版本：
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.0-rc.6
+npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 dsh web
 ```
@@ -103,7 +104,7 @@ Web UI 默认位于 `http://127.0.0.1:3080`。请只在 Harness 自身界面中�
 如不希望全局安装，可手动运行：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 web
+npx @deepseek-ai/dsh@0.1.0-rc.7 web
 ```
 
 Skill 的 `start` 命令需要 `dsh` 已安装并存在于 `PATH`。
@@ -184,7 +185,7 @@ python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
 | `standard` | 文案、归纳、分析、视频前期文字和意见 | 默认选择 |
 | `code` | 明确的编码、仓库实现或源码审查 | 仅编码任务使用 |
 | `cordis` | Harness composition 开发 | 仅用户明确要求时使用 |
-| `minimal` | 不使用 | RC.6 没有提供此工作流预期的文件写入 sandbox，因此客户端主动拒绝 |
+| `minimal` | 不使用 | RC.7 没有提供此工作流预期的文件写入 sandbox，因此客户端主动拒绝 |
 
 ### Scope
 
@@ -199,7 +200,8 @@ python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
 
 - 对细腻文案、跨文件推理和错误成本较高的任务，默认使用 `deepseek-v4-pro`。
 - 只有在能够接受 deployment-wide 默认模型被改动时，才用 `deepseek-v4-flash` 做快速低风险迭代。
-- RC.6 中，每次 `create`、`run` 或 `delegate` 不只选择当前会话模型，也会持久化 Harness 的部署级默认模型。如该共享设置不能变化，应使用已有会话配合 `send`，或暂停确认。
+- RC.7 可选 `--reasoning-effort off|low|high|max`；省略时沿用 adapter 默认值。解析后的值会返回并写入 `STATUS.json`。
+- RC.7 中，每次 `create`、`run` 或 `delegate` 不只选择当前会话模型与可选推理强度，也会把解析后的选择持久化为 Harness 的部署级默认值。如该共享设置不能变化，应使用已有会话配合 `send`，或暂停确认。
 
 ## CLI 命令
 
@@ -288,11 +290,11 @@ python3 scripts/dsh_harness.py --help
 
 ### 为什么拒绝 `minimal`？
 
-RC.6 的该 composition 没有提供本工作流预期的文件写入 sandbox。客户端选择 fail closed，而不是把它包装成安全 preset。
+RC.7 的该 composition 没有提供本工作流预期的文件写入 sandbox。客户端选择 fail closed，而不是把它包装成安全 preset。
 
 ### 为什么选择模型会影响其它会话？
 
-在当前针对的 RC.6 行为中，`session.selectModel` 还会持久化 deployment-wide 默认值。本客户端会明确报告这项副作用，不把它描述成纯会话级设置。
+在当前针对的 RC.7 行为中，`session.selectModel` 还会持久化 deployment-wide 默认模型与解析后的推理强度。本客户端会明确报告这项副作用，不把它描述成纯会话级设置。
 
 ## 开发与验证
 

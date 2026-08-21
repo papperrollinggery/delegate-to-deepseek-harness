@@ -45,7 +45,7 @@ Keep this repository as the development source and the Codex Skills directory as
 - Never expose the Harness Web API on a non-loopback interface. It has no authentication boundary.
 - Treat `workspace-write` as a write boundary only. It does not restrict reads or outbound network access.
 - Never pass, read, print, persist, or publish model credentials or task secrets.
-- Never use the `minimal` preset. Its RC.6 composition does not provide the expected file-write sandbox.
+- Never use the `minimal` preset. Its RC.7 composition does not provide the expected file-write sandbox.
 - `session.selectModel` also persists the deployment-wide default model. Every `create`, `run`, or `delegate` call therefore has a shared settings side effect. Record the default before model-switching tests and restore it afterward using only a session created by that test.
 - E2E tests may create new Harness sessions, but must not prompt, cancel, rename, or otherwise mutate pre-existing sessions.
 - The delegation loop stays in the current Codex thread: do not call `spawn_agent`, fork a thread, or invoke `codex exec` on DeepSeek's behalf.

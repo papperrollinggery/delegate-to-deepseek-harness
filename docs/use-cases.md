@@ -12,7 +12,7 @@ Answer five questions first:
 2. **Which directory contains all required inputs?** Prefer a dedicated workstream directory over the whole project root.
 3. **Should DeepSeek edit project files?** If no, use `proposal-only`.
 4. **Is the output text or media?** This Skill handles text and code. Use separate, authorized tools for media rendering, export, upload, or publication.
-5. **Can the Harness deployment default model change?** New sessions persist the selected model as the RC.6 deployment default.
+5. **Can the Harness deployment default selection change?** New sessions persist the selected model and resolved reasoning effort as the RC.7 deployment default.
 
 ## 1. Copywriting inside a complex campaign
 

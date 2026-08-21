@@ -28,7 +28,7 @@ It is designed for focused copywriting, research synthesis, video-preproduction 
 | Can Codex and DeepSeek work in parallel? | Yes. `delegate` returns after acceptance; Codex continues other work and later uses `collect`. |
 | How long can a task run? | There is no default wall-clock wait limit. An optional client deadline never cancels the Harness task. |
 | Where does it connect? | Only to literal loopback hosts: `127.0.0.1`, `localhost`, or `::1`. |
-| Which Harness version is targeted? | `@deepseek-ai/dsh 0.1.0-rc.6` Web profile. |
+| Which Harness version is targeted? | `@deepseek-ai/dsh 0.1.0-rc.7` Web profile. |
 | Which models are supported? | `deepseek-v4-pro` and `deepseek-v4-flash` through `deepseek-official`. |
 | How are results exchanged? | `SCOPE.md`, `TASK.md`, `RESULT.md`, `OPINION.md`, `ASK.md`, and `STATUS.json`. |
 | Does it require a Python package? | No. `scripts/dsh_harness.py` uses only the Python 3 standard library. |
@@ -45,6 +45,7 @@ Calling a second model is easy. Keeping that collaboration scoped, observable, a
 - **Verified completion** — collect the matching `turn/end`; do not treat a queued prompt as finished work.
 - **Update awareness** — check once per day for a published Skill version and ask before installing it.
 - **Bidirectional work** — read results back, inspect live status, and continue the same Harness session.
+- **Reasoning-effort control** — optionally select `off`, `low`, `high`, or `max` and record the resolved value in durable status.
 - **Local control plane** — refuse non-loopback endpoints, redirects, credential-bearing URLs, and broad root directories.
 - **Honest safety model** — treat `workspace-write` as a write boundary, not as read or network isolation.
 
@@ -81,7 +82,7 @@ The orchestration loop stays in the current Codex task. `delegate` writes the sc
 - Codex with [custom Skill support](https://developers.openai.com/codex/skills)
 - Python 3.10 or newer
 - Node.js supported by the current DeepSeek Harness release
-- DeepSeek Harness Web profile; this repository currently targets `@deepseek-ai/dsh 0.1.0-rc.6`
+- DeepSeek Harness Web profile; this repository currently targets `@deepseek-ai/dsh 0.1.0-rc.7`
 - DeepSeek provider credentials configured directly in Harness, never in this repository or delegated task text
 
 The client is tested locally on macOS and in Linux CI. Its Windows file-locking fallback is not yet covered by live end-to-end verification, and `start`/`stop` require POSIX process and signal support.
@@ -93,7 +94,7 @@ The client is tested locally on macOS and in Linux CI. Its Windows file-locking 
 For the compatibility-tested version:
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.1.0-rc.6
+npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
 dsh web
 ```
@@ -103,7 +104,7 @@ The Web UI is served at `http://127.0.0.1:3080` by default. Configure the provid
 If you prefer not to install globally, run the service manually with:
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.6 web
+npx @deepseek-ai/dsh@0.1.0-rc.7 web
 ```
 
 The Skill's `start` command requires `dsh` to be installed on `PATH`.
@@ -183,7 +184,7 @@ python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
 | `standard` | Writing, synthesis, analysis, video-preproduction text, and opinions | Default |
 | `code` | Explicit coding, repository implementation, or source-focused review | Use only for coding work |
 | `cordis` | Harness composition development | Use only when explicitly requested |
-| `minimal` | Nothing | Deliberately rejected because RC.6 does not provide the expected file-write sandbox |
+| `minimal` | Nothing | Deliberately rejected because RC.7 does not provide the expected file-write sandbox |
 
 ### Scope
 
@@ -198,7 +199,8 @@ python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
 
 - Use `deepseek-v4-pro` by default for nuanced writing, multi-file reasoning, and higher-cost mistakes.
 - Use `deepseek-v4-flash` for fast, low-risk iteration when the deployment-wide default-model mutation is acceptable.
-- Every `create`, `run`, or `delegate` call selects the session model and also persists it as the Harness deployment default in RC.6. Use an existing session with `send`, or stop and ask, when that shared setting must not change.
+- RC.7 accepts optional `--reasoning-effort off|low|high|max`; omitting it keeps the adapter default. The resolved value is returned and stored in `STATUS.json`.
+- Every `create`, `run`, or `delegate` call selects the session model and optional reasoning effort and also persists the resolved selection as the Harness deployment default in RC.7. Use an existing session with `send`, or stop and ask, when that shared setting must not change.
 
 ## CLI reference
 
@@ -287,11 +289,11 @@ No. It is an instructional guardrail that declares collaboration control files a
 
 ### Why is `minimal` rejected?
 
-The RC.6 composition does not provide the file-write sandbox this workflow expects. The client fails closed instead of presenting it as a safe preset.
+The RC.7 composition does not provide the file-write sandbox this workflow expects. The client fails closed instead of presenting it as a safe preset.
 
 ### Why can model selection affect other sessions?
 
-In the targeted RC.6 behavior, `session.selectModel` also persists the deployment-wide default. The client reports this side effect and does not describe model selection as session-only.
+In the targeted RC.7 behavior, `session.selectModel` also persists the deployment-wide default model and resolved reasoning effort. The client reports this side effect and does not describe model selection as session-only.
 
 ## Development
 
