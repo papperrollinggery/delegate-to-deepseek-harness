@@ -165,6 +165,8 @@ python3 scripts/dsh_harness.py send SESSION_ID \
 
 通常由 Codex 代为调用客户端。手动使用时，把较长任务保存在 UTF-8 文件中，而且不要与 `delegate` 会覆盖的控制文件同名：
 
+执行类命令会在需要时自动启动本机回环 Harness，复用常规 Harness Home 语义，不再重复索要启动授权。只有服务由其它 supervisor 管理时才传 `--no-auto-start`；启动以外的敏感审批仍单独受控。
+
 ```sh
 python3 scripts/dsh_harness.py delegate \
   --cwd /absolute/project/workstreams/copy \

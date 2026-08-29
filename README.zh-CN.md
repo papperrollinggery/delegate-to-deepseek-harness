@@ -46,7 +46,7 @@
 - **版本感知**：每天最多检查一次已发布版本，安装前必须先询问用户。
 - **双向协作**：读回结果、检查实时状态，并可继续同一个 Harness 会话。
 - **推理强度控制**：可选 `off`、`low`、`high` 或 `max`，并把解析后的值写入持久状态。
-- **本机控制面**：拒绝非回环端点、跳转、带凭据 URL 和过宽的根目录。
+- **可自行恢复的本机控制面**：执行命令在需要时自动启动回环服务，同时继续拒绝非回环端点、跳转、带凭据 URL 和过宽的根目录。
 - **诚实安全模型**：`workspace-write` 只视作写入边界，不冒充读取或网络隔离。
 
 ## 常见使用场景
@@ -96,7 +96,7 @@ flowchart LR
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
-dsh web
+dsh web --no-open
 ```
 
 Web UI 默认位于 `http://127.0.0.1:3080`。请只在 Harness 自身界面中配置 provider，不要把 API key 写进本仓库、提示词或协作文件。
@@ -107,9 +107,9 @@ Web UI 默认位于 `http://127.0.0.1:3080`。请只在 Harness 自身界面中�
 npx @deepseek-ai/dsh@0.1.0-rc.7 web
 ```
 
-Skill 的 `start` 命令需要 `dsh` 已安装并存在于 `PATH`。
+Skill 的执行类命令会在 Harness 离线时自动启动服务；`dsh` 必须已安装并存在于 `PATH`。
 
-不传 `--dsh-home` 时，`start` 会在操作系统临时目录中使用一次性 Harness Home，因此不会复用常规 Harness Home 中的 provider 配置或会话。确需复用时应明确传入已知 Harness Home。在 Windows 或其它非 POSIX 平台上，请手动启动 Harness，只使用 RPC 相关命令。
+不传 `--dsh-home` 时，启动流程会继承已有 `DSH_HOME`，否则让 `dsh` 使用自己的常规 Home，从而继续使用由 Harness 管理的 provider 配置和会话。自动启动从客户端私有状态目录拉起，而不是从被委派项目启动，避免把项目 `.env` 物化进服务环境；新会话仍通过 RPC 接收真正的任务 `--cwd`。只有确实需要隔离 Home 时才显式传入 `--dsh-home`。后台启动始终附加 `--no-open`；只有 `open-ui` 或 `start --open-ui` 会明确打开浏览器。在 Windows 或其它非 POSIX 平台上，请手动启动 Harness，并给执行类 RPC 命令传入 `--no-auto-start`。
 
 ### 2. 安装 Codex Skill
 
@@ -153,7 +153,7 @@ bash scripts/update-global.sh
 只返回方案，并标记没有来源支撑的宣传口径。
 ```
 
-Codex 应先探测服务，选择最小范围并提交任务；随后推进其它独立工作，收集 `RESULT.md`、核对 `STATUS.json`，并报告 session ID、preset、工作目录、完成原因与剩余不确定性。
+Codex 可以先只读探测服务，但探测失败不应停止或再次索要启动授权：`delegate` 会自动启动回环服务。随后选择最小范围并提交任务，推进其它独立工作，收集 `RESULT.md`、核对 `STATUS.json`，并报告 service 回执、session ID、preset、工作目录、完成原因与剩余不确定性。
 
 ## 并行与长任务工作流
 
@@ -174,7 +174,7 @@ python3 scripts/dsh_harness.py collect --cwd /absolute/project/path
 python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
 ```
 
-`--timeout` 只是可选的客户端等待截止，不是 DeepSeek 执行时限。截止后返回 `pending`/`running`，保留相同的 `sessionId` 与 `rpcId`，并且绝不取消 Harness 回合。不设截止时，客户端会在会话持续运行期间一直等待；只有 Harness 在宽限期内持续不再报告运行、同时又没有匹配 `turn/end`，才报告 `stalled`。只有 Codex 已经没有任何可并行工作时，才使用 `delegate --wait`。
+`--timeout` 只是可选的客户端等待截止，不是 DeepSeek 执行时限。对 `delegate` 指定 timeout 时，即使没有 `--wait` 也会启用一次有界等待。截止后返回 `pending`/`running`，保留相同的 `sessionId` 与 `rpcId`，并且绝不取消 Harness 回合。不设截止时，客户端会在会话持续运行期间一直等待；只有 Harness 在宽限期内持续不再报告运行、同时又没有匹配 `turn/end`，才报告 `stalled`。只有 Codex 已经没有任何可并行工作时，才使用 `delegate --wait`。
 
 ## 如何选择路由
 
@@ -225,9 +225,11 @@ python3 scripts/dsh_harness.py --help
 | `create` / `run` | 更底层的会话与提示流程 |
 | `cancel` | 仅在用户要求或确需停止时取消活跃回合 |
 | `start` / `stop` | 启动回环服务；只停止由本客户端启动且当前没有运行中会话的服务 |
-| `open-ui` | 打开已经运行的本机 Web UI |
+| `open-ui` | 必要时先启动服务，再明确打开本机 Web UI |
 
 对于较长或涉及 shell 特殊字符的任务，优先使用 `--text-file`，不要塞进很长的 `--text`。
+
+`create`、`run`、`delegate`、`send`、`collect`、`status`、`wait`、`result`、`cancel` 与 `open-ui` 会在需要时自动启动 Harness，并在输出的 `service` 字段中附带结构化生命周期回执。只有生命周期由其它 supervisor 管理或需要 fail-fast 诊断时才传 `--no-auto-start`。`probe`、`list`、`read-back` 与 `stop` 不会自动启动。
 
 底层 `wait --baseline-seq N --baseline-fallback` 恢复模式只适用于全新会话，且基线 `N` 之后不可能先结束其它回合（例如 `run --no-wait` 创建的会话）。不要把它用于排在一个运行中回合后面的提示。常规 `delegate`/`collect` 会自动处理这一区别。
 
@@ -257,6 +259,7 @@ python3 scripts/dsh_harness.py --help
 - 不要把 Harness Web API 暴露到局域网或公网；它没有认证边界。
 - 假定 `workspace-write` 只限制写入，不限制同用户读取或出站网络。
 - 未经明确授权，不委派凭据、私钥、支付、发布、部署或破坏性修改。
+- 调用执行类命令只代表授权安全的本机回环启动和既有任务范围内的普通续跑；不代表授权录入凭据、选择账号、付费、扩大范围或高风险审批。
 - 不自动回答 Harness 的审批或范围问题。
 - 每日更新检查只对本仓库公开的最新 release 元数据发起一次短时只读请求，不发送任务内容，并可用 `DSH_DISABLE_UPDATE_CHECK=1` 关闭；安装仍需用户确认。
 
@@ -275,6 +278,10 @@ python3 scripts/dsh_harness.py --help
 ### DeepSeek 运行几小时时，Codex 能继续工作吗？
 
 可以。`delegate` 在提示被接受后立即返回。Codex 应继续其它独立工作，在自然检查点使用 `status` 或短时 `collect --timeout 1`；只有结果成为硬依赖时才使用不设截止的 `collect`。默认不存在 900 秒任务上限。
+
+### 每次都需要重新授权启动 Harness 吗？
+
+不需要。调用本 Skill 执行委派或续跑，本身就包含本机回环启动授权。Harness 离线时，客户端会按常规 Home 语义启动 Web profile 并继续当前工作流；启动以外的敏感动作仍单独受控。
 
 ### Skill 会静默自动更新吗？
 

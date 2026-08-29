@@ -46,7 +46,7 @@ Calling a second model is easy. Keeping that collaboration scoped, observable, a
 - **Update awareness** — check once per day for a published Skill version and ask before installing it.
 - **Bidirectional work** — read results back, inspect live status, and continue the same Harness session.
 - **Reasoning-effort control** — optionally select `off`, `low`, `high`, or `max` and record the resolved value in durable status.
-- **Local control plane** — refuse non-loopback endpoints, redirects, credential-bearing URLs, and broad root directories.
+- **Self-recovering local control plane** — operational commands auto-start the loopback service, while still refusing non-loopback endpoints, redirects, credential-bearing URLs, and broad root directories.
 - **Honest safety model** — treat `workspace-write` as a write boundary, not as read or network isolation.
 
 ## Common use cases
@@ -96,7 +96,7 @@ For the compatibility-tested version:
 ```sh
 npm install --global @deepseek-ai/dsh@0.1.0-rc.7
 dsh --version
-dsh web
+dsh web --no-open
 ```
 
 The Web UI is served at `http://127.0.0.1:3080` by default. Configure the provider in Harness itself. Do not put API keys in this repository, prompts, or collaboration files.
@@ -107,9 +107,9 @@ If you prefer not to install globally, run the service manually with:
 npx @deepseek-ai/dsh@0.1.0-rc.7 web
 ```
 
-The Skill's `start` command requires `dsh` to be installed on `PATH`.
+The Skill's operational commands start Harness automatically when it is offline; `dsh` must be installed on `PATH`.
 
-Without `--dsh-home`, `start` uses a disposable Harness home under the OS temporary directory, so it does not reuse provider configuration or sessions from the normal Harness home. Pass a known Harness home explicitly when reuse is intended. On Windows or another non-POSIX platform, start Harness manually and use the RPC commands only.
+Without `--dsh-home`, startup inherits an existing `DSH_HOME` or lets `dsh` use its normal Home, preserving the provider configuration and sessions already managed by Harness. Automatic startup boots from the client's private state directory rather than the delegated project, so a project `.env` is not materialized into the service environment; the new session still receives its requested task `--cwd` through RPC. An explicit `--dsh-home` is only for an intentionally separate Home. Background startup always passes `--no-open`; use `open-ui` or `start --open-ui` when the browser is genuinely needed. On Windows or another non-POSIX platform, start Harness manually and pass `--no-auto-start` to operational RPC commands.
 
 ### 2. Install the Codex Skill
 
@@ -152,7 +152,7 @@ preproduction: do not render, edit, upload, or publish media. Return a proposal
 and flag unsupported claims.
 ```
 
-Codex should probe the service, choose the narrowest scope, submit the task, continue independent work, collect the result, inspect `STATUS.json`, and report the session ID, preset, working directory, completion reason, and remaining uncertainty.
+Codex may probe the service read-only, but a failed probe is not a reason to stop or ask again: `delegate` starts the loopback service automatically. Codex should choose the narrowest scope, submit the task, continue independent work, collect the result, inspect `STATUS.json`, and report the service receipt, session ID, preset, working directory, completion reason, and remaining uncertainty.
 
 ## Parallel and long-running workflow
 
@@ -173,7 +173,7 @@ python3 scripts/dsh_harness.py collect --cwd /absolute/project/path
 python3 scripts/dsh_harness.py read-back --cwd /absolute/project/path
 ```
 
-`--timeout` is an optional client-side wait deadline, not a DeepSeek execution limit. Reaching it returns `pending`/`running`, preserves the same `sessionId` and `rpcId`, and never cancels the Harness turn. With no deadline, the client keeps waiting while the session is active and reports `stalled` only when Harness has stopped reporting it as running for a grace period without a matching `turn/end`. Use `delegate --wait` only when no independent Codex work can proceed.
+`--timeout` is an optional client-side wait deadline, not a DeepSeek execution limit. On `delegate`, specifying a timeout also enables a bounded wait even without `--wait`. Reaching it returns `pending`/`running`, preserves the same `sessionId` and `rpcId`, and never cancels the Harness turn. With no deadline, the client keeps waiting while the session is active and reports `stalled` only when Harness has stopped reporting it as running for a grace period without a matching `turn/end`. Use `delegate --wait` only when no independent Codex work can proceed.
 
 ## Choose the right route
 
@@ -224,9 +224,11 @@ python3 scripts/dsh_harness.py --help
 | `create` / `run` | Use lower-level session and prompt flows |
 | `cancel` | Cancel an active turn only when requested or necessary |
 | `start` / `stop` | Start a loopback service; stop only a service owned by this client and refuse while sessions are running |
-| `open-ui` | Open the already-running local Web UI |
+| `open-ui` | Start the service if needed, then explicitly open the local Web UI |
 
 For long or shell-sensitive instructions, use `--text-file` rather than a large inline `--text` value.
+
+`create`, `run`, `delegate`, `send`, `collect`, `status`, `wait`, `result`, `cancel`, and `open-ui` auto-start Harness when needed and add a structured `service` receipt to their output. Pass `--no-auto-start` only when another supervisor owns the lifecycle or when a fail-fast diagnostic is required. `probe`, `list`, `read-back`, and `stop` do not auto-start.
 
 The low-level `wait --baseline-seq N --baseline-fallback` recovery mode is only safe for a fresh session where no earlier turn can finish after baseline `N` (for example, `run --no-wait`). Never enable it for a prompt queued behind an existing running turn. Normal `delegate`/`collect` handles this automatically.
 
@@ -256,6 +258,7 @@ This client provides guardrails, not a security sandbox.
 - Never expose the Harness Web API on a LAN or public interface; it has no authentication boundary.
 - Assume `workspace-write` restricts writes only. It does not restrict same-user reads or outbound network access.
 - Never delegate credentials, private keys, payment actions, publishing, deployment, or destructive changes without explicit authorization.
+- Invoking an operational command authorizes only safe local loopback startup and ordinary continuation inside the existing task scope; it does not authorize credential entry, account selection, payment, scope expansion, or high-risk approvals.
 - Never auto-answer a Harness approval or scope question.
 - The daily update check makes one short read-only request to this repository's public latest-release metadata, sends no task content, and can be disabled with `DSH_DISABLE_UPDATE_CHECK=1`. Installation still requires user approval.
 
@@ -274,6 +277,10 @@ No. The control loop remains in the current Codex task. DeepSeek work runs in a 
 ### Can Codex keep working while DeepSeek runs for hours?
 
 Yes. `delegate` returns after prompt acceptance. Codex should continue any independent work, use `status` or short `collect --timeout 1` checks at natural checkpoints, and call `collect` without a deadline only when the result becomes a hard dependency. There is no default 900-second task limit.
+
+### Do I need to authorize Harness startup every time?
+
+No. Calling this Skill for an operational delegation or continuation command is the startup authorization. If Harness is offline, the client starts its loopback Web profile with normal Home semantics and continues the requested workflow. Sensitive actions beyond startup remain separately gated.
 
 ### Does the Skill update itself silently?
 

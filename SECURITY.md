@@ -32,6 +32,7 @@ Changes must preserve these boundaries:
 10. **No pre-existing session mutation in tests.** End-to-end tests may create sessions but must not prompt, cancel, rename, or otherwise mutate existing ones.
 11. **No same-directory prompt overlap through this client.** Serialize `delegate`, `run`, and `send` per resolved working directory. Reject unsafe overlap with other running Harness sessions for that directory.
 12. **Update checks are read-only and approval-gated.** `check-update.sh` may read only this repository's public latest-release metadata, must not send task content, and must fail silently. `update-global.sh` runs only after explicit user approval and verifies the downloaded archive version before installation.
+13. **Auto-start preserves the same boundary.** Operational commands may start only the validated loopback endpoint, boot from the client's private state directory instead of the delegated project, inherit Harness Home selection without reading or printing credentials, and must pass `--no-open` unless the caller explicitly invokes `open-ui` or `start --open-ui`.
 
 ## Important limitations
 
@@ -44,6 +45,7 @@ Changes must preserve these boundaries:
 - `.dsh-delegation-history` preserves previous control files inside the selected working directory. It prevents reuse of already-existing stale output, but it is not tamper-evident or isolated from the same-user Harness process; keep it out of version control and treat it as sensitive task data.
 - The per-directory lock coordinates this CLI's `delegate`, `run`, and `send` commands only. It cannot stop a different Harness UI or third-party client from prompting an idle same-directory session after the preflight check. Do not interact with another session for the selected `cwd` while a prompting command is running.
 - DeepSeek Harness is a developer preview and may change compatibility or security behavior.
+- Automatic service startup is not automatic approval: credential entry, account selection, payment, scope expansion, and high-risk Harness prompts remain human-gated.
 
 ## Out of scope for this repository
 

@@ -7,7 +7,7 @@ Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-
 ## Core facts
 
 - Project type: standalone Codex Skill plus a Python 3.10+ standard-library CLI.
-- Current release line: v0.3.x; the machine-readable installed version is in VERSION.
+- Current release line: v0.4.x; the machine-readable installed version is in VERSION.
 - Primary use cases: copywriting, research synthesis, video-preproduction text, coding, review, and independent opinions inside larger projects.
 - Parallel behavior: delegate returns after prompt acceptance by default; Codex should continue independent work and use collect at natural checkpoints.
 - Long-running behavior: there is no default wall-clock wait limit; an explicit timeout limits only the client wait and never cancels the Harness turn.
@@ -18,7 +18,7 @@ Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-
 - Harness endpoint boundary: literal loopback hosts only: 127.0.0.1, localhost, or ::1. The separate update checker may read this repository's public latest-release metadata from GitHub.
 - Runtime Python dependencies: none outside the standard library.
 - Project status: community project; not affiliated with or endorsed by OpenAI or DeepSeek.
-- Service lifecycle: start/stop require POSIX process and signal support; without --dsh-home, start uses a disposable temporary Harness home and does not reuse the normal provider configuration or sessions.
+- Service lifecycle: operational commands auto-start the loopback service from a private state directory and return a service receipt; startup inherits DSH_HOME or normal dsh Home semantics, suppresses automatic browser opening, and supports --no-auto-start for fail-fast diagnostics. start/stop require POSIX process and signal support.
 - License: MIT License. See https://github.com/papperrollinggery/delegate-to-deepseek-harness/blob/main/LICENSE.
 
 ## Primary documentation
@@ -59,6 +59,7 @@ Canonical repository: https://github.com/papperrollinggery/delegate-to-deepseek-
 - delegate, run, and send prompting paths are serialized per cwd by this CLI, and unsafe overlap with other running same-directory sessions is rejected; independent UI or third-party clients are outside that lock.
 - collect uses the durable sessionId and rpcId in STATUS.json to finalize an asynchronous delegation without creating a second session.
 - stop refuses to terminate a healthy owned Harness service while any session is still running; recovery of an owned but unresponsive process remains possible.
+- Operational invocation authorizes safe loopback startup without a repeated user confirmation, but never authorizes credentials, account selection, payment, scope expansion, or high-risk approval.
 - create, run, and delegate select a model and optional reasoning effort and also persist the RC.7 deployment-wide default selection.
 - The minimal preset is deliberately rejected.
 

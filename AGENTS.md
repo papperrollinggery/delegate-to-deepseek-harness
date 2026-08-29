@@ -37,6 +37,7 @@ Keep this repository as the development source and the Codex Skills directory as
 - `collect` checks or waits for the recorded `sessionId`/`rpcId`, preserves `RESULT.md`, and finalizes durable status. There is no default wall-clock wait limit.
 - A model-written `RESULT.md` is preserved. Final assistant text is used only when `RESULT.md` is missing.
 - `read-back` reads `RESULT.md`, `OPINION.md`, and `ASK.md`; `status` combines `STATUS.json` with live session state.
+- Operational commands auto-start the loopback service from the client's private state directory, inherit `DSH_HOME` or normal `dsh` Home semantics, suppress browser handoff with `--no-open`, and return a structured service receipt. `probe` remains read-only.
 - `REPLY.md` is a proposed future append-only response channel; it is not implemented yet.
 
 ## Safety invariants
@@ -49,6 +50,7 @@ Keep this repository as the development source and the Codex Skills directory as
 - `session.selectModel` also persists the deployment-wide default model. Every `create`, `run`, or `delegate` call therefore has a shared settings side effect. Record the default before model-switching tests and restore it afterward using only a session created by that test.
 - E2E tests may create new Harness sessions, but must not prompt, cancel, rename, or otherwise mutate pre-existing sessions.
 - The delegation loop stays in the current Codex thread: do not call `spawn_agent`, fork a thread, or invoke `codex exec` on DeepSeek's behalf.
+- Operational invocation authorizes safe loopback startup without another user confirmation. It does not authorize credential entry, account selection, payment, scope expansion, or high-risk approval.
 
 ## Development workflow
 

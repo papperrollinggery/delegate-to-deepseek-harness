@@ -167,6 +167,8 @@ Use `wait SESSION_ID --rpc-id RPC_ID` later when the follow-up becomes a depende
 
 Codex normally invokes the client for you. For manual use, keep long task text in a UTF-8 file outside the control filenames that `delegate` overwrites:
 
+An operational command starts the loopback Harness service automatically when needed; it reuses normal Harness Home semantics and never asks for startup authorization again. Pass `--no-auto-start` only when another supervisor owns the service. Sensitive approvals remain separate from startup.
+
 ```sh
 python3 scripts/dsh_harness.py delegate \
   --cwd /absolute/project/workstreams/copy \

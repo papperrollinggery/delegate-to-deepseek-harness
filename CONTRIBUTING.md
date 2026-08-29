@@ -50,6 +50,7 @@ The non-loopback probe must exit non-zero.
 - Add a narrowly scoped regression test for behavior changes.
 - Preserve model-written `RESULT.md`; use assistant text only when the file is absent.
 - Preserve asynchronous submission: a client wait deadline must not cancel the Harness task or turn a still-running delegation into a failed result.
+- Preserve auto-start boundaries: operational commands may recover the loopback service from the private state directory, but `probe` stays read-only, normal startup must pass `--no-open`, and no path may inspect or copy Harness credentials or materialize a delegated project's `.env` into the service environment.
 
 ### Documentation
 
@@ -69,6 +70,8 @@ Unit tests must not require credentials or a running Harness. When a behavior ch
 5. Confirm that no pre-existing session was prompted, cancelled, renamed, or otherwise mutated.
 6. Restore the previous default model using only a session created by the test.
 7. Remove or securely discard test artifacts; never commit them.
+
+For auto-start changes, begin with the endpoint offline, invoke an operational command without a separate `start`, record the structured `service` receipt, then stop and recover the same test-created session through a continuation command. Do not stop a service while any pre-existing session is running.
 
 Do not expose credentials or copy secret-bearing logs into an issue or pull request.
 
