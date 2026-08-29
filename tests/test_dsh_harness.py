@@ -310,6 +310,245 @@ class ModelSelectionTests(unittest.TestCase):
 
 
 class ServiceLifecycleTests(unittest.TestCase):
+    def test_owned_server_state_is_written_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            payload = {
+                "pid": 4241,
+                "url": "http://127.0.0.1:3080",
+                "cwd": "/tmp/task",
+            }
+
+            with (
+                mock.patch.object(
+                    dsh_harness, "state_directory", return_value=runtime
+                ),
+                mock.patch.object(
+                    dsh_harness, "atomic_write_text"
+                ) as atomic_write,
+            ):
+                dsh_harness.write_state(payload)
+
+            atomic_write.assert_called_once()
+            self.assertEqual(atomic_write.call_args.args[:2], (str(runtime), "server.json"))
+            self.assertEqual(json.loads(atomic_write.call_args.args[2]), payload)
+
+    def test_operational_auto_start_uses_private_neutral_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = root / "task"
+            task.mkdir()
+            runtime = root / "runtime"
+            runtime.mkdir(mode=0o700)
+            args = argparse.Namespace(
+                command="delegate",
+                cwd=str(task),
+                no_auto_start=False,
+            )
+            client = mock.Mock()
+            receipt = {"status": "started"}
+
+            with (
+                mock.patch.object(
+                    dsh_harness, "state_directory", return_value=runtime
+                ),
+                mock.patch.object(
+                    dsh_harness, "start_server", return_value=receipt
+                ) as start_server,
+            ):
+                result = dsh_harness.ensure_service_for_command(client, args)
+
+            self.assertEqual(result, receipt)
+            startup_args = start_server.call_args.args[1]
+            self.assertEqual(startup_args.cwd, str(runtime.resolve()))
+            self.assertNotEqual(startup_args.cwd, str(task.resolve()))
+
+    def test_default_start_inherits_normal_home_and_suppresses_browser_handoff(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cwd = root / "task"
+            cwd.mkdir()
+            runtime = root / "runtime"
+            runtime.mkdir()
+            process = mock.Mock(pid=4242)
+            process.poll.return_value = None
+            client = mock.Mock()
+            client.base_url = "http://127.0.0.1:3080"
+            client.probe_root.side_effect = [
+                dsh_harness.HarnessError("offline"),
+                200,
+            ]
+            client.sessions.return_value = []
+            args = argparse.Namespace(
+                cwd=str(cwd),
+                dsh_home=None,
+                open_ui=False,
+            )
+
+            with (
+                mock.patch.object(
+                    dsh_harness, "state_directory", return_value=runtime
+                ),
+                mock.patch.object(
+                    dsh_harness.shutil, "which", return_value="/usr/local/bin/dsh"
+                ),
+                mock.patch.object(
+                    dsh_harness.subprocess, "Popen", return_value=process
+                ) as popen,
+                mock.patch.object(dsh_harness.webbrowser, "open") as open_browser,
+                mock.patch.dict(dsh_harness.os.environ, {}, clear=True),
+            ):
+                result = dsh_harness.start_server(client, args)
+
+            command = popen.call_args.args[0]
+            environment = popen.call_args.kwargs["env"]
+            self.assertEqual(
+                command,
+                [
+                    "/usr/local/bin/dsh",
+                    "web",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "3080",
+                    "--no-open",
+                ],
+            )
+            self.assertNotIn("DSH_HOME", environment)
+            self.assertEqual(result["dshHomeMode"], "default")
+            self.assertFalse(result["uiOpened"])
+            open_browser.assert_not_called()
+
+    def test_explicit_start_home_overrides_normal_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cwd = root / "task"
+            cwd.mkdir()
+            runtime = root / "runtime"
+            runtime.mkdir()
+            explicit_home = root / "configured-home"
+            process = mock.Mock(pid=4243)
+            process.poll.return_value = None
+            client = mock.Mock()
+            client.base_url = "http://127.0.0.1:3080"
+            client.probe_root.side_effect = [
+                dsh_harness.HarnessError("offline"),
+                200,
+            ]
+            client.sessions.return_value = []
+            args = argparse.Namespace(
+                cwd=str(cwd),
+                dsh_home=str(explicit_home),
+                open_ui=False,
+            )
+
+            with (
+                mock.patch.object(
+                    dsh_harness, "state_directory", return_value=runtime
+                ),
+                mock.patch.object(
+                    dsh_harness.shutil, "which", return_value="/usr/local/bin/dsh"
+                ),
+                mock.patch.object(
+                    dsh_harness.subprocess, "Popen", return_value=process
+                ) as popen,
+                mock.patch.dict(dsh_harness.os.environ, {}, clear=True),
+            ):
+                result = dsh_harness.start_server(client, args)
+
+            environment = popen.call_args.kwargs["env"]
+            self.assertEqual(environment["DSH_HOME"], str(explicit_home.resolve()))
+            self.assertEqual(result.get("dshHomeMode"), "explicit")
+
+    def test_start_inherits_environment_harness_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cwd = root / "task"
+            cwd.mkdir()
+            runtime = root / "runtime"
+            runtime.mkdir()
+            inherited_home = root / "inherited-home"
+            process = mock.Mock(pid=4245)
+            process.poll.return_value = None
+            client = mock.Mock()
+            client.base_url = "http://127.0.0.1:3080"
+            client.probe_root.side_effect = [
+                dsh_harness.HarnessError("offline"),
+                200,
+            ]
+            client.sessions.return_value = []
+            args = argparse.Namespace(
+                cwd=str(cwd),
+                dsh_home=None,
+                open_ui=False,
+            )
+
+            with (
+                mock.patch.object(
+                    dsh_harness, "state_directory", return_value=runtime
+                ),
+                mock.patch.object(
+                    dsh_harness.shutil, "which", return_value="/usr/local/bin/dsh"
+                ),
+                mock.patch.object(
+                    dsh_harness.subprocess, "Popen", return_value=process
+                ) as popen,
+                mock.patch.dict(
+                    dsh_harness.os.environ,
+                    {"DSH_HOME": str(inherited_home)},
+                    clear=True,
+                ),
+            ):
+                result = dsh_harness.start_server(client, args)
+
+            environment = popen.call_args.kwargs["env"]
+            self.assertEqual(environment["DSH_HOME"], str(inherited_home))
+            self.assertEqual(result.get("dshHomeMode"), "environment")
+
+    def test_start_recovers_when_another_process_wins_the_port_race(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cwd = root / "task"
+            cwd.mkdir()
+            runtime = root / "runtime"
+            runtime.mkdir()
+            process = mock.Mock(pid=4244)
+            process.poll.return_value = 1
+            client = mock.Mock()
+            client.base_url = "http://127.0.0.1:3080"
+            client.probe_root.side_effect = [
+                dsh_harness.HarnessError("offline"),
+                200,
+            ]
+            client.sessions.return_value = []
+            args = argparse.Namespace(
+                cwd=str(cwd),
+                dsh_home=None,
+                open_ui=False,
+            )
+
+            with (
+                mock.patch.object(
+                    dsh_harness, "state_directory", return_value=runtime
+                ),
+                mock.patch.object(
+                    dsh_harness.shutil, "which", return_value="/usr/local/bin/dsh"
+                ),
+                mock.patch.object(
+                    dsh_harness.subprocess, "Popen", return_value=process
+                ),
+                mock.patch.dict(dsh_harness.os.environ, {}, clear=True),
+            ):
+                try:
+                    result = dsh_harness.start_server(client, args)
+                except dsh_harness.HarnessError as exc:
+                    self.fail(f"port-race recovery raised instead of reusing service: {exc}")
+
+            self.assertEqual(result["status"], "already-running")
+            self.assertEqual(result["recovery"], "another-process-started-service")
+
     def test_stop_refuses_while_any_harness_session_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "server.json"
@@ -954,6 +1193,95 @@ class CliTests(unittest.TestCase):
         self.assertFalse(args.wait)
         self.assertIsNone(args.timeout)
 
+    def test_delegate_auto_starts_and_emits_service_receipt(self) -> None:
+        argv = [
+            "dsh_harness.py",
+            "delegate",
+            "--cwd",
+            "/tmp/example",
+            "--text",
+            "task",
+        ]
+        receipt = {"status": "started", "url": "http://127.0.0.1:3080"}
+        outcome = {"delegateStatus": "running", "sessionId": "session-1"}
+
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(dsh_harness, "HarnessClient"),
+            mock.patch.object(
+                dsh_harness,
+                "ensure_service_for_command",
+                create=True,
+                return_value=receipt,
+            ) as ensure_service,
+            mock.patch.object(
+                dsh_harness, "delegate_task", return_value=outcome
+            ),
+            mock.patch.object(dsh_harness, "emit") as emit,
+        ):
+            self.assertEqual(dsh_harness.main(), 0)
+
+        ensure_service.assert_called_once()
+        self.assertEqual(
+            emit.call_args.args[0],
+            {**outcome, "service": receipt},
+        )
+
+    def test_delegate_auto_start_can_be_disabled_without_starting_service(self) -> None:
+        argv = [
+            "dsh_harness.py",
+            "delegate",
+            "--cwd",
+            "/tmp/example",
+            "--text",
+            "task",
+            "--no-auto-start",
+        ]
+        outcome = {"delegateStatus": "running", "sessionId": "session-1"}
+
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(dsh_harness, "HarnessClient"),
+            mock.patch.object(dsh_harness, "start_server") as start_server,
+            mock.patch.object(
+                dsh_harness, "delegate_task", return_value=outcome
+            ),
+            mock.patch.object(dsh_harness, "emit") as emit,
+        ):
+            self.assertEqual(dsh_harness.main(), 0)
+
+        start_server.assert_not_called()
+        self.assertEqual(emit.call_args.args[0], outcome)
+
+    def test_probe_stays_read_only(self) -> None:
+        client = mock.Mock()
+        client.probe_root.return_value = 200
+        client.sessions.return_value = []
+
+        with (
+            mock.patch.object(sys, "argv", ["dsh_harness.py", "probe"]),
+            mock.patch.object(dsh_harness, "HarnessClient", return_value=client),
+            mock.patch.object(dsh_harness, "start_server") as start_server,
+            mock.patch.object(dsh_harness, "emit") as emit,
+        ):
+            self.assertEqual(dsh_harness.main(), 0)
+
+        start_server.assert_not_called()
+        self.assertEqual(emit.call_args.args[0]["status"], "ready")
+        self.assertNotIn("service", emit.call_args.args[0])
+
+    def test_operational_commands_offer_auto_start_opt_out(self) -> None:
+        for command in ("delegate", "collect", "send", "open-ui"):
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), command, "--help"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            with self.subTest(command=command):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("--no-auto-start", result.stdout)
+
     def test_create_commands_accept_optional_reasoning_effort(self) -> None:
         default_args = dsh_harness.parser().parse_args(
             ["create", "--cwd", "/tmp/example"]
@@ -1026,6 +1354,11 @@ class CliTests(unittest.TestCase):
                 self.subTest(command=argv[1]),
                 mock.patch.object(sys, "argv", argv),
                 mock.patch.object(dsh_harness, "HarnessClient"),
+                mock.patch.object(
+                    dsh_harness,
+                    "ensure_service_for_command",
+                    return_value={"status": "already-running"},
+                ),
                 mock.patch.object(dsh_harness, function_name, return_value=outcome),
                 mock.patch.object(dsh_harness, "emit"),
             ):

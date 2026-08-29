@@ -1,4 +1,4 @@
 interface:
   display_name: "DeepSeek Harness Delegator"
-  short_description: "Async DeepSeek delegation for parallel Codex work"
-  default_prompt: "Use $delegate-to-deepseek-harness to asynchronously delegate the smallest suitable workstream, continue independent Codex work, and collect the verified result when needed."
+  short_description: "Auto-starting async DeepSeek delegation for Codex"
+  default_prompt: "Use $delegate-to-deepseek-harness to auto-start the loopback Harness when needed, asynchronously delegate the smallest suitable workstream, continue independent Codex work, and collect the verified result without asking again for startup authorization."

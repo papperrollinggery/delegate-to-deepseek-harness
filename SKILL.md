@@ -1,6 +1,6 @@
 ---
 name: delegate-to-deepseek-harness
-description: "Use a locally running DeepSeek Harness for scoped, asynchronous collaboration over its loopback Web API and a cwd-pinned file channel. Delegate a bounded writing, research, video-preproduction, coding, review, or opinion workstream while Codex continues independent work; monitor and collect long-running results without a fixed wall-clock limit; continue an existing conversation; or control the local Harness service. Trigger when the user asks Codex to let DeepSeek or DeepSeek Harness handle part of a task, consult DeepSeek, collect a second opinion, run work in parallel, or read back delegated work without creating a new Codex thread."
+description: "Use DeepSeek Harness for scoped, asynchronous collaboration over its loopback Web API and a cwd-pinned file channel, automatically starting the local service when an operational command needs it. Delegate a bounded writing, research, video-preproduction, coding, review, or opinion workstream while Codex continues independent work; monitor and collect long-running results without a fixed wall-clock limit; continue an existing conversation; or control the local Harness service. Trigger when the user asks Codex to let DeepSeek or DeepSeek Harness handle part of a task, consult DeepSeek, collect a second opinion, run work in parallel, or read back delegated work without creating a new Codex thread."
 ---
 
 # Delegate to DeepSeek Harness
@@ -12,7 +12,7 @@ At the start of a task, run `bash scripts/check-update.sh`. It reads GitHub's la
 ## Safety rules
 
 - Connect to Harness only through a literal loopback URL. The RPC client rejects non-loopback hosts; the separate update checker may read only this repository's public latest-release metadata from GitHub.
-- Probe before acting. Start the service only when delegation requires it or the user asks to start it.
+- Treat an operational command (`create`, `run`, `delegate`, `send`, `collect`, `status`, `wait`, `result`, `cancel`, or `open-ui`) as authorization to start the local loopback service when it is offline. Do not ask again for startup authorization. `probe` stays read-only.
 - Use `standard` by default. Never use `minimal`; the current RC.7 composition bypasses the file-write sandbox.
 - Use `code` only for an explicitly coding-focused task. Use `cordis` only when the user explicitly asks to develop or alter Harness compositions.
 - Choose `--cwd` from the actual task scope: a dedicated directory for self-contained work, the project root for cross-file work, and the project root plus `proposal-only` for advice that must not modify project files. Never select a home directory, credential directory, or unrelated client-data tree.
@@ -21,7 +21,7 @@ At the start of a task, run `bash scripts/check-update.sh`. It reads GitHub's la
 - Treat `--model` and `--reasoning-effort` as deployment-setting mutations. In RC.7, `session.selectModel` selects the new session model and optional reasoning effort and also persists the resolved selection as the deployment-wide `agent-default-model`; there is no separate pure session-only RPC. `create`, `run`, and `delegate` call it, defaulting to `deepseek-v4-pro` and the adapter's reasoning effort. An explicit `--model deepseek-v4-flash` or `--reasoning-effort off|low|high|max` therefore also changes the defaults observed by later blank sessions and the Web UI. If preserving the current deployment default is required, do not create a session with these commands; use an existing session with `send` or stop and ask before proceeding.
 - Delegation never expands the user's authorization. Do not ask Harness to publish, deploy, message, pay, delete, expose credentials, or mutate external systems unless the user authorized that action.
 - Do not pass secrets in task text. Never read or write Harness credentials through this Skill.
-- Never auto-answer approval or question prompts. A client wait deadline is not a task failure and never cancels the Harness turn; continue independent work and collect again later. Use the Web UI only when status or events show that human attention is actually needed.
+- Never auto-answer approval or question prompts. Starting the service is authorized by the operational command, but credentials, account selection, payment, scope expansion, and high-risk approvals remain human-gated. A client wait deadline is not a task failure and never cancels the Harness turn; continue independent work and collect again later. Use `open-ui` only when status or events show that human attention is actually needed.
 - Never stop the owned Harness service while any session is still running. `stop` verifies live sessions and fails closed; an unresponsive owned process may still be stopped for recovery because its session state cannot be queried.
 - Report the session id, preset, model, resolved reasoning effort, working directory, completion reason, and any unverified state.
 
@@ -35,19 +35,23 @@ At the start of a task, run `bash scripts/check-update.sh`. It reads GitHub's la
 
 ## Core workflow
 
-1. Check the live service:
+1. Optionally check the live service without side effects:
 
    ```sh
    python3 scripts/dsh_harness.py probe
    ```
 
-2. If unavailable and starting it is in scope, use an explicit working directory. Add `--dsh-home` only when the intended Harness Home is already known:
+2. Continue with the operational command even when `probe` is unavailable; the client starts Harness automatically from its private state directory, not the delegated project, so a project `.env` does not become service launch environment. It inherits an existing `DSH_HOME`, otherwise it lets `dsh` use its normal Home so configured provider state and sessions remain available. Ordinary startup passes `--no-open` and returns a `service` receipt instead of opening a browser. Use `--no-auto-start` only for an explicit fail-fast diagnostic.
+
+   For an explicit lifecycle operation or an intentionally separate Harness Home:
 
    ```sh
-   python3 scripts/dsh_harness.py start --cwd /absolute/project/path --open-ui
+   python3 scripts/dsh_harness.py start --cwd /absolute/project/path
+   python3 scripts/dsh_harness.py start --cwd /absolute/project/path --dsh-home /absolute/harness/home
+   python3 scripts/dsh_harness.py open-ui
    ```
 
-   Without `--dsh-home`, `start` uses a disposable Harness home under the OS temporary directory; it will not reuse provider configuration or sessions from the user's normal Harness home. `start`/`stop` require POSIX process and signal support. On unsupported platforms, start Harness manually and use the RPC commands only.
+   `start` never reads or prints credentials. Without `--dsh-home`, it inherits `DSH_HOME` or the normal `dsh` Home. It always launches the background service with `--no-open`; only explicit `open-ui` or `start --open-ui` opens the browser. `start`/`stop` require POSIX process and signal support. On unsupported platforms, start Harness manually and use the RPC commands with `--no-auto-start`.
 
 3. Classify the task before creating a session:
 
@@ -56,7 +60,7 @@ At the start of a task, run `bash scripts/check-update.sh`. It reads GitHub's la
    - `proposal-only`: read the project but only write collaboration control files.
    - Work outside the selected root, including `.env`, keys, system paths, or another project: delegate a proposal/diff only, or obtain explicit user authorization first.
 
-4. Prefer `delegate` for a new task. It serializes submission for the selected directory, refuses reuse while a same-directory Harness session is running, archives the previous file channel, writes `SCOPE.md` and `TASK.md`, creates a cwd-pinned session, submits the prompt, records `sessionId` and `rpcId` in `STATUS.json`, and returns immediately after acceptance:
+4. Prefer `delegate` for a new task. It first ensures the loopback service is ready, then serializes submission for the selected directory, refuses reuse while a same-directory Harness session is running, archives the previous file channel, writes `SCOPE.md` and `TASK.md`, creates a cwd-pinned session, submits the prompt, records `sessionId` and `rpcId` in `STATUS.json`, and returns immediately after acceptance:
 
    ```sh
    python3 scripts/dsh_harness.py delegate \
@@ -86,7 +90,7 @@ At the start of a task, run `bash scripts/check-update.sh`. It reads GitHub's la
    python3 scripts/dsh_harness.py status --cwd /absolute/project/path
    ```
 
-7. Continue the same conversation when needed. Add `--no-wait` when Codex has independent work to do:
+7. Continue the same conversation when needed. `send` also restores the service automatically after an owned server stop or crash. Add `--no-wait` when Codex has independent work to do:
 
    ```sh
    python3 scripts/dsh_harness.py send SESSION_ID \
@@ -96,7 +100,7 @@ At the start of a task, run `bash scripts/check-update.sh`. It reads GitHub's la
 
 8. Return the assistant text only after checking `completionReason`. A reason other than `completed` is not a successful completion.
 
-For long or shell-sensitive prompts, write a scoped temporary text file with the normal file-editing workflow and pass `--text-file /path/to/task.txt`. Use `delegate --wait` only when its result is an immediate hard dependency and no independent Codex work can proceed. An explicit `--timeout SECONDS` limits only the client wait; it does not limit or cancel the Harness task.
+For long or shell-sensitive prompts, write a scoped temporary text file with the normal file-editing workflow and pass `--text-file /path/to/task.txt`. Use `delegate --wait` only when its result is an immediate hard dependency and no independent Codex work can proceed. On `delegate`, an explicit `--timeout SECONDS` also enables a bounded wait; it limits only the client wait and does not limit or cancel the Harness task.
 
 ## 委派循环协议
 
@@ -151,13 +155,13 @@ python3 scripts/dsh_harness.py result SESSION_ID
 # Cancel the active turn only when requested or necessary to stop the delegated work
 python3 scripts/dsh_harness.py cancel SESSION_ID
 
-# Open the local UI
+# Start if needed and explicitly open the local UI
 python3 scripts/dsh_harness.py open-ui
 
 # Stop only a server instance previously started by this script, and only when no session is running
 python3 scripts/dsh_harness.py stop
 ```
 
-Use `python3 scripts/dsh_harness.py --help` for all flags. The default endpoint is `http://127.0.0.1:3080`; override it with `--base-url` or `DEEPSEEK_HARNESS_URL`, still subject to the loopback-only check.
+Use `python3 scripts/dsh_harness.py --help` for all flags. Operational commands auto-start by default and include the lifecycle result under `service`; pass `--no-auto-start` to preserve fail-fast behavior. The default endpoint is `http://127.0.0.1:3080`; override it with `--base-url` or `DEEPSEEK_HARNESS_URL`, still subject to the loopback-only check.
 
 Use `--baseline-fallback` only when no earlier turn can finish after the supplied baseline, such as a fresh session created by `run --no-wait`. Do not use it for a prompt queued behind an existing running turn; ordinary RPC matching remains fail-closed there.

@@ -48,6 +48,20 @@ ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 MODELS = ("deepseek-v4-pro", "deepseek-v4-flash")
 REASONING_EFFORTS = ("off", "low", "high", "max")
 SCOPES = ("auto", "single-dir", "cross-file", "proposal-only")
+AUTO_START_COMMANDS = frozenset(
+    {
+        "create",
+        "send",
+        "run",
+        "delegate",
+        "collect",
+        "wait",
+        "result",
+        "cancel",
+        "open-ui",
+        "status",
+    }
+)
 PROJECT_ROOT_MARKERS = (
     ".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod",
     "pom.xml", "build.gradle", "Makefile", "AGENTS.md",
@@ -248,6 +262,19 @@ def ensure_directory(raw: str) -> str:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not path.is_dir():
         raise HarnessError(f"working directory is not a directory: {path}")
+    return str(path.resolve())
+
+
+def ensure_harness_home(raw: str) -> str:
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        raise HarnessError("Harness Home must be an absolute path")
+    path = candidate.resolve(strict=False)
+    if path == Path(path.anchor) or path == Path.home():
+        raise HarnessError("Harness Home must be narrower than a filesystem or user-home root")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not path.is_dir():
+        raise HarnessError(f"Harness Home is not a directory: {path}")
     return str(path.resolve())
 
 
@@ -1083,12 +1110,11 @@ def state_file() -> Path:
 
 
 def write_state(payload: dict[str, Any]) -> None:
-    encoded = json.dumps(payload).encode("utf-8")
-    fd = os.open(state_file(), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, encoded)
-    finally:
-        os.close(fd)
+    atomic_write_text(
+        str(state_directory()),
+        "server.json",
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+    )
 
 
 def process_command(pid: int) -> str:
@@ -1115,9 +1141,14 @@ def start_server(client: HarnessClient, args: argparse.Namespace) -> dict[str, A
     try:
         status = client.probe_root()
         client.sessions()
-        if args.open_ui:
-            webbrowser.open(client.base_url)
-        return {"status": "already-running", "url": client.base_url, "httpStatus": status}
+        ui_opened = bool(webbrowser.open(client.base_url)) if args.open_ui else False
+        return {
+            "status": "already-running",
+            "url": client.base_url,
+            "httpStatus": status,
+            "dshHomeMode": "existing-service",
+            "uiOpened": ui_opened,
+        }
     except HarnessError:
         pass
 
@@ -1126,19 +1157,33 @@ def start_server(client: HarnessClient, args: argparse.Namespace) -> dict[str, A
         raise HarnessError("dsh is not installed or not on PATH")
     cwd = require_directory(args.cwd)
     parsed = urlsplit(client.base_url)
+    host = parsed.hostname or "127.0.0.1"
     port = parsed.port or 80
     env = os.environ.copy()
     env["DSH_TELEMETRY_MODE"] = "DISABLED"
     env["DSH_TELEMETRY_DISABLED"] = "1"
     runtime = state_directory()
-    dsh_home = Path(args.dsh_home).expanduser().resolve() if args.dsh_home is not None else runtime / "dsh-home"
-    dsh_home.mkdir(mode=0o700, parents=True, exist_ok=True)
-    env["DSH_HOME"] = str(dsh_home)
+    if args.dsh_home is not None:
+        env["DSH_HOME"] = ensure_harness_home(args.dsh_home)
+        dsh_home_mode = "explicit"
+    elif env.get("DSH_HOME", "").strip():
+        dsh_home_mode = "environment"
+    else:
+        env.pop("DSH_HOME", None)
+        dsh_home_mode = "default"
     log_path = runtime / "server.log"
     log_fd = os.open(log_path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
     log_handle = os.fdopen(log_fd, "a", encoding="utf-8")
     process = subprocess.Popen(
-        [executable, "web", "--port", str(port)],
+        [
+            executable,
+            "web",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--no-open",
+        ],
         cwd=cwd,
         env=env,
         stdout=log_handle,
@@ -1151,15 +1196,32 @@ def start_server(client: HarnessClient, args: argparse.Namespace) -> dict[str, A
     deadline = time.monotonic() + START_TIMEOUT
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
-            raise HarnessError(f"dsh web exited with {process.returncode}: {tail}")
+            try:
+                status = client.probe_root()
+                client.sessions()
+            except HarnessError:
+                tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+                raise HarnessError(f"dsh web exited with {process.returncode}: {tail}")
+            ui_opened = bool(webbrowser.open(client.base_url)) if args.open_ui else False
+            return {
+                "status": "already-running",
+                "url": client.base_url,
+                "httpStatus": status,
+                "dshHomeMode": "existing-service",
+                "uiOpened": ui_opened,
+                "recovery": "another-process-started-service",
+            }
         try:
             status = client.probe_root()
             client.sessions()
-            payload = {"pid": process.pid, "url": client.base_url, "cwd": cwd}
+            payload = {
+                "pid": process.pid,
+                "url": client.base_url,
+                "cwd": cwd,
+                "dshHomeMode": dsh_home_mode,
+            }
             write_state(payload)
-            if args.open_ui:
-                webbrowser.open(client.base_url)
+            ui_opened = bool(webbrowser.open(client.base_url)) if args.open_ui else False
             return {
                 "status": "started",
                 "url": client.base_url,
@@ -1167,12 +1229,39 @@ def start_server(client: HarnessClient, args: argparse.Namespace) -> dict[str, A
                 "pid": process.pid,
                 "cwd": cwd,
                 "log": str(log_path),
+                "dshHomeMode": dsh_home_mode,
+                "uiOpened": ui_opened,
             }
         except HarnessError:
             time.sleep(0.25)
 
     process.send_signal(signal.SIGINT)
     raise HarnessError(f"dsh web did not become ready within {START_TIMEOUT:g} seconds")
+
+
+def startup_directory_for_command(_args: argparse.Namespace) -> str:
+    return require_directory(str(state_directory()))
+
+
+def ensure_service_for_command(
+    client: HarnessClient,
+    args: argparse.Namespace,
+) -> dict[str, Any] | None:
+    if args.command not in AUTO_START_COMMANDS or getattr(args, "no_auto_start", False):
+        return None
+    startup_args = argparse.Namespace(
+        cwd=startup_directory_for_command(args),
+        dsh_home=None,
+        open_ui=False,
+    )
+    return start_server(client, startup_args)
+
+
+def with_service_receipt(
+    outcome: dict[str, Any],
+    service: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return outcome if service is None else {**outcome, "service": service}
 
 
 def stop_server(client: HarnessClient) -> dict[str, Any]:
@@ -1266,6 +1355,14 @@ def add_wait_timeout_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_auto_start_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-auto-start",
+        action="store_true",
+        help="Fail if Harness is offline instead of starting the loopback service",
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument(
@@ -1280,18 +1377,21 @@ def parser() -> argparse.ArgumentParser:
 
     create = commands.add_parser("create", help="Create an idle session")
     add_create_arguments(create)
+    add_auto_start_argument(create)
 
     send = commands.add_parser("send", help="Send a prompt to an existing session")
     send.add_argument("session_id")
     add_text_arguments(send)
     add_wait_timeout_argument(send)
     send.add_argument("--no-wait", action="store_true", help="Return after the prompt is accepted")
+    add_auto_start_argument(send)
 
     run = commands.add_parser("run", help="Create a session, send a prompt, and wait")
     add_create_arguments(run)
     add_text_arguments(run)
     add_wait_timeout_argument(run)
     run.add_argument("--no-wait", action="store_true")
+    add_auto_start_argument(run)
 
     delegate = commands.add_parser(
         "delegate",
@@ -1306,6 +1406,7 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Wait for completion instead of returning after acceptance",
     )
+    add_auto_start_argument(delegate)
 
     collect = commands.add_parser(
         "collect",
@@ -1313,6 +1414,7 @@ def parser() -> argparse.ArgumentParser:
     )
     collect.add_argument("--cwd", required=True)
     add_wait_timeout_argument(collect)
+    add_auto_start_argument(collect)
 
     wait = commands.add_parser("wait", help="Wait for one accepted prompt")
     wait.add_argument("session_id")
@@ -1324,20 +1426,25 @@ def parser() -> argparse.ArgumentParser:
         help="Allow first-turn-after-baseline recovery only when no earlier turn can finish after that baseline",
     )
     add_wait_timeout_argument(wait)
+    add_auto_start_argument(wait)
 
     result = commands.add_parser("result", help="Read the last completed turn")
     result.add_argument("session_id")
+    add_auto_start_argument(result)
 
     cancel = commands.add_parser("cancel", help="Cancel an active session turn")
     cancel.add_argument("session_id")
+    add_auto_start_argument(cancel)
 
-    commands.add_parser("open-ui", help="Open the local Harness UI")
+    open_ui = commands.add_parser("open-ui", help="Start if needed and open the local Harness UI")
+    add_auto_start_argument(open_ui)
 
     read_back_parser = commands.add_parser("read-back", help="Read RESULT/OPINION/ASK files")
     read_back_parser.add_argument("--cwd", required=True)
 
     status_parser = commands.add_parser("status", help="Read STATUS.json and live running state")
     status_parser.add_argument("--cwd", required=True)
+    add_auto_start_argument(status_parser)
 
     start = commands.add_parser("start", help="Start a loopback dsh web instance")
     start.add_argument("--cwd", required=True)
@@ -1353,24 +1460,28 @@ def main() -> int:
     if getattr(args, "timeout", None) is not None and args.timeout <= 0:
         raise HarnessError("timeout must be positive")
     client = HarnessClient(args.base_url)
+    service = ensure_service_for_command(client, args)
+
+    def output(value: dict[str, Any]) -> None:
+        emit(with_service_receipt(value, service))
 
     if args.command == "probe":
         http_status = client.probe_root()
         items = client.sessions()
-        emit({"status": "ready", "url": client.base_url, "httpStatus": http_status, "sessions": len(items)})
+        output({"status": "ready", "url": client.base_url, "httpStatus": http_status, "sessions": len(items)})
     elif args.command == "list":
-        emit({"sessions": [summary(item) for item in client.sessions()]})
+        output({"sessions": [summary(item) for item in client.sessions()]})
     elif args.command == "create":
-        emit({"status": "created", **create_session(client, args)})
+        output({"status": "created", **create_session(client, args)})
     elif args.command == "send":
         outcome = send_task(client, args)
-        emit(outcome)
+        output(outcome)
         if outcome.get("status") not in ("accepted", "completed", "pending"):
             return 2
     elif args.command == "run":
         created, outcome = run_task(client, args)
         if args.no_wait:
-            emit(
+            output(
                 {
                     "sessionId": outcome["sessionId"],
                     "rpcId": outcome["rpcId"],
@@ -1378,17 +1489,17 @@ def main() -> int:
                 }
             )
         else:
-            emit({**created, **outcome})
+            output({**created, **outcome})
         if outcome.get("status") not in ("accepted", "completed", "pending"):
             return 2
     elif args.command == "delegate":
         outcome = delegate_task(client, args)
-        emit(outcome)
+        output(outcome)
         if outcome.get("delegateStatus") not in ("done", "running", "pending"):
             return 2
     elif args.command == "collect":
         outcome = collect_delegate(client, args)
-        emit(outcome)
+        output(outcome)
         if outcome.get("delegateStatus") not in ("done", "running", "pending"):
             return 2
     elif args.command == "wait":
@@ -1400,30 +1511,30 @@ def main() -> int:
             args.baseline_seq,
             args.baseline_fallback,
         )
-        emit(outcome)
+        output(outcome)
         if outcome.get("status") not in ("completed", "pending"):
             return 2
     elif args.command == "result":
         outcome = last_completed_turn(client.history(args.session_id))
-        emit({"sessionId": args.session_id, "result": outcome})
+        output({"sessionId": args.session_id, "result": outcome})
         if outcome is None or outcome.get("status") != "completed":
             return 2
     elif args.command == "cancel":
         _, value = client.rpc("session.cancel", {"sessionId": args.session_id})
-        emit({"status": "cancel-requested", "sessionId": args.session_id, "value": value})
+        output({"status": "cancel-requested", "sessionId": args.session_id, "value": value})
     elif args.command == "open-ui":
         client.probe_root()
         client.sessions()
         opened = webbrowser.open(client.base_url)
-        emit({"status": "opened" if opened else "open-requested", "url": client.base_url})
+        output({"status": "opened" if opened else "open-requested", "url": client.base_url})
     elif args.command == "read-back":
-        emit(read_back(args.cwd))
+        output(read_back(args.cwd))
     elif args.command == "status":
-        emit(directory_status(client, args.cwd))
+        output(directory_status(client, args.cwd))
     elif args.command == "start":
-        emit(start_server(client, args))
+        output(start_server(client, args))
     elif args.command == "stop":
-        emit(stop_server(client))
+        output(stop_server(client))
     else:
         raise HarnessError(f"unsupported command: {args.command}")
     return 0
